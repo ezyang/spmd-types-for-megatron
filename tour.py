@@ -25,8 +25,15 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
-POST = "index.html"
-SCRATCH = "scratch.html"
+POST = "index.html"  # primary document; new units land here
+SCRATCH = "scratch.html"  # units parked here count as unplaced but pass check
+ASSETS = ("tour.css", "tour.js")  # renderer; written by init if missing, next to tour.py
+
+
+def documents() -> list[str]:
+    """Every *.html in the working directory is a document; index.html first."""
+    names = sorted(n for n in os.listdir(".") if n.endswith(".html"))
+    return sorted(names, key=lambda n: (n != POST, n == SCRATCH, n))
 CONTEXT = 3
 MODULE = "<module>"
 
@@ -377,9 +384,6 @@ TEMPLATE = """<!DOCTYPE html>
 </html>
 """
 
-ASSETS = ("tour.css", "tour.js")  # renderer; written by init if missing, next to tour.py
-
-
 def new_document(title: str, repo: str, base: str, head: str, compare: str, body: str) -> str:
     return TEMPLATE.format(title=html.escape(title), repo=html.escape(repo, quote=True),
                            base=base, head=head, compare=html.escape(compare, quote=True), body=body)
@@ -514,9 +518,8 @@ def cmd_sync(args: argparse.Namespace) -> int:
     counts = {"unchanged": 0, "changed": 0, "removed": 0, "new": 0}
     placed: set = set()
     docs = {}
-    for path in (POST, SCRATCH):
-        if os.path.exists(path):
-            docs[path] = sync_document(read(path), units, placed, counts)
+    for path in documents():
+        docs[path] = sync_document(read(path), units, placed, counts)
     new_units = sorted((u for k, u in units.items() if k not in placed), key=lambda u: u.order)
     if new_units:
         counts["new"] = len(new_units)
@@ -536,14 +539,14 @@ def doc_keys(path: str) -> set:
 
 def cmd_check(args: argparse.Namespace) -> int:
     problems = []
-    for path, ln, kind, what in report_markers([POST]):
+    for path, ln, kind, what in report_markers([d for d in documents() if d != SCRATCH]):
         problems.append(f"{path}:{ln}: SYNC:{kind} {what}")
     repo = args.repo or os.environ.get("TOUR_REPO")
     if not repo:
         raise SystemExit("check needs REPO_PATH (argument or TOUR_REPO env var) to verify totality")
     post = read(POST)
     base, head = meta_get(post, "base"), meta_get(post, "head")
-    known = doc_keys(POST) | doc_keys(SCRATCH)
+    known = set().union(*(doc_keys(d) for d in documents()))
     for u in extract_units(repo, base, head):
         if u.key not in known:
             problems.append(f"missing: {u.file}::{u.symbol}")
@@ -554,14 +557,18 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    doc = read(POST)
-    items = [(m.start(), "h2", re.sub(r"<[^>]+>", "", m.group(1)).strip()) for m in H2_RE.finditer(doc)]
-    items += [(p.start, "pre", f"{p.key[0]}::{p.key[1]}") for p in find_pres(doc)]
-    items.sort()
-    if items and items[0][1] != "h2":
-        print("(before first heading)")
-    for _, kind, text in items:
-        print(text if kind == "h2" else f"    {text}")
+    for path in documents():
+        if path == SCRATCH:
+            continue
+        doc = read(path)
+        items = [(m.start(), "h2", re.sub(r"<[^>]+>", "", m.group(1)).strip()) for m in H2_RE.finditer(doc)]
+        items += [(p.start, "pre", f"{p.key[0]}::{p.key[1]}") for p in find_pres(doc)]
+        items.sort()
+        print(f"== {path}")
+        if items and items[0][1] != "h2":
+            print("(before first heading)")
+        for _, kind, text in items:
+            print(text if kind == "h2" else f"    {text}")
     return 0
 
 
@@ -577,7 +584,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("check", help="fail if markers remain or a unit is unplaced")
     p.add_argument("repo", nargs="?")
     p.set_defaults(fn=cmd_check)
-    p = sub.add_parser("list", help="print the reading order")
+    p = sub.add_parser("list", help="print the reading order of every document")
     p.set_defaults(fn=cmd_list)
     args = ap.parse_args(argv)
     return args.fn(args)

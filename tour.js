@@ -75,6 +75,7 @@
     });
 
     var box = el('div', 'tour');
+    box.id = file + '::' + symbol;
     var headRow = el('div', 'tour-head');
     var fileLink = el('a', null, file);
     fileLink.href = compare;

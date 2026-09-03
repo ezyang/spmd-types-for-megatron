@@ -1,0 +1,20 @@
+body { max-width: 60em; margin: 2em auto; padding: 0 1em; font: 16px/1.5 Georgia, serif; color: #222; }
+h1, h2 { font-family: Helvetica, Arial, sans-serif; }
+code { font: 0.9em/1.4 ui-monospace, Menlo, Consolas, monospace; }
+pre.hunk { display: none; }
+.tour { margin: 1.2em 0; border: 1px solid #ddd; border-radius: 4px; font: 13px/1.45 ui-monospace, Menlo, Consolas, monospace; overflow-x: auto; }
+.tour-head { padding: 4px 10px; background: #f6f8fa; border-bottom: 1px solid #ddd; color: #444; }
+.tour-head a { color: #0550ae; text-decoration: none; }
+.tour-head a:hover { text-decoration: underline; }
+.tour-head .sym { margin-left: 1em; color: #666; }
+.tour table { border-collapse: collapse; width: 100%; }
+.tour td { padding: 0 8px; white-space: pre; vertical-align: top; }
+.tour td.ln { width: 1%; text-align: right; color: #999; user-select: none; }
+.tour td.ln a { color: #999; text-decoration: none; }
+.tour td.ln a:hover { color: #0550ae; }
+.tour td.mk { width: 1%; padding: 0 2px; color: #888; user-select: none; }
+.tour tr.add { background: #e6ffec; }
+.tour tr.add td.ln { background: #ccffd8; }
+.tour tr.del { background: #ffebe9; }
+.tour tr.del td.ln { background: #ffd7d5; }
+.tour tr.sep td { background: #f0f4f8; color: #789; font-size: 11px; padding: 2px 8px; }

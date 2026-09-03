@@ -1,6 +1,6 @@
 # Narrated diff of the Megatron SPMD type-checking change
 
-`post.html` is the document. `tour.py` keeps the diff hunks inside it in sync
+`index.html` is the document. `tour.py` keeps the diff hunks inside it in sync
 with the branch; you write the prose around them.
 
     python3 tour.py init  REPO_PATH BASE HEAD   # merge-base, extract units into scratch.html, write meta tags
@@ -25,4 +25,8 @@ A unit is one `(file, symbol)`, where symbol is the innermost enclosing
 uses `data-hash` just to decide whether to leave a `SYNC:changed` marker with
 the diff of the diff. Delete markers yourself once the prose is right; run
 `check` before publishing. `init` overwrites `scratch.html`; it never
-overwrites an existing `post.html`.
+overwrites an existing `index.html`.
+
+The renderer is `tour.css` and `tour.js`, loaded by `index.html` and
+`scratch.html`. Pushing `main` deploys the repo root to GitHub Pages via
+`.github/workflows/pages.yml` (set Pages source to "GitHub Actions" once).

@@ -8,35 +8,15 @@
 <meta name="tour-base" content="99a108127dc4441da2ac1b71774549bb2d841608">
 <meta name="tour-head" content="78cd9041fdf3bf6df757d6a3ffcd382101a4678b">
 <meta name="tour-compare" content="https://github.com/ezyang/Megatron-LM/compare/mlperf-enhancements...review/spmd-types-totality-20260901">
-<style>
-body { max-width: 60em; margin: 2em auto; padding: 0 1em; font: 16px/1.5 Georgia, serif; color: #222; }
-h1, h2 { font-family: Helvetica, Arial, sans-serif; }
-code { font: 0.9em/1.4 ui-monospace, Menlo, Consolas, monospace; }
-pre.hunk { display: none; }
-.tour { margin: 1.2em 0; border: 1px solid #ddd; border-radius: 4px; font: 13px/1.45 ui-monospace, Menlo, Consolas, monospace; overflow-x: auto; }
-.tour-head { padding: 4px 10px; background: #f6f8fa; border-bottom: 1px solid #ddd; color: #444; }
-.tour-head a { color: #0550ae; text-decoration: none; }
-.tour-head a:hover { text-decoration: underline; }
-.tour-head .sym { margin-left: 1em; color: #666; }
-.tour table { border-collapse: collapse; width: 100%; }
-.tour td { padding: 0 8px; white-space: pre; vertical-align: top; }
-.tour td.ln { width: 1%; text-align: right; color: #999; user-select: none; }
-.tour td.ln a { color: #999; text-decoration: none; }
-.tour td.ln a:hover { color: #0550ae; }
-.tour td.mk { width: 1%; padding: 0 2px; color: #888; user-select: none; }
-.tour tr.add { background: #e6ffec; }
-.tour tr.add td.ln { background: #ccffd8; }
-.tour tr.del { background: #ffebe9; }
-.tour tr.del td.ln { background: #ffd7d5; }
-.tour tr.sep td { background: #f0f4f8; color: #789; font-size: 11px; padding: 2px 8px; }
-</style>
+<link rel="stylesheet" href="tour.css">
+<script src="tour.js" defer></script>
 </head>
 <body>
 <h1>Type-checking Megatron's parallelism</h1>
 
 <section id="what-type-checks-means">
 <h2>What "type checks" means here</h2>
-<!-- TODO: Introduce R, V, I, S(d) through the five-line contract on _ReduceFromModelParallelRegion: V in, I out, R when the output carries no gradient. -->
+<!-- TODO: Introduce R, V, I, S(d) through the five-line contract on _ReduceFromModelParallelRegion: V in, I out, R when the output carries no gradient. A process group names a mesh axis. -->
 <pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceFromModelParallelRegion.spmd_typecheck" data-hash="f5a40f79fb" data-render="added">
 @@ -227,6 +234,15 @@ def forward(ctx, input_, group):
          """Forward function."""
@@ -59,7 +39,7 @@ pre.hunk { display: none; }
 
 <section id="definition-sites">
 <h2>Contracts live at definition sites</h2>
-<!-- TODO: Every native TP collective states its own contract next to forward/backward; the linear layers' input type depends on allreduce_dgrad and sequence_parallel. -->
+<!-- TODO: Each native collective states its contract beside its forward/backward, in adjoint pairs: copy/reduce, scatter/gather on the last dim, scatter/gather on the sequence dim, the reduce-scatters, all-to-all. Then the linears, whose input type depends on allreduce_dgrad and sequence_parallel. -->
 <pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_CopyToModelParallelRegion.spmd_typecheck" data-hash="fa4ffa6d7c" data-render="added">
 @@ -208,6 +209,12 @@ def forward(ctx, input_, group):
          ctx.group = group
@@ -256,7 +236,21 @@ pre.hunk { display: none; }
 
 <section id="who-declares-what">
 <h2>Who declares what</h2>
-<!-- TODO: The model asserts only the axes it shards (TP); DDP asserts R on every mesh axis inside its reduction group, because its backward collective is what makes that promise true, folding DP and CP. -->
+<!-- TODO: The model asserts only the axis it shards (TP, read off Megatron's parameter attributes). DDP asserts R on every mesh axis inside its dp_cp reduction group, because its backward collective is what makes that promise true; the mesh keeps DP and CP separate, so the promise is folded onto each. Tensors with no gradient are the model's alone to type. annotate_model ties it together. -->
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dense_parameter" data-hash="39641952d1" data-render="added">
+@@ -0,0 +76,11 @@ def annotate_tensor(
++
++
++def _annotate_dense_parameter(tensor: torch.Tensor) -&gt; None:
++    """Annotate a trainable parameter on the axis the model shards it over.
++
++    Only TP is the model's to declare. Whether the parameter is replicated across
++    data parallelism, and that its gradient gets summed there, is a promise made
++    by whichever wrapper performs that reduction (see
++    ``DistributedDataParallel``), so it is left for that wrapper to assert.
++    """
++    spmd.assert_type(tensor, {"TP": _tensor_parallel_type(tensor)})
+</pre>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_tensor_parallel_type" data-hash="6ffc16d35a" data-render="added">
 @@ -0,0 +20,26 @@
 +
@@ -286,19 +280,64 @@ pre.hunk { display: none; }
 +        return spmd.R
 +    return spmd.I if tensor.requires_grad else spmd.R
 </pre>
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dense_parameter" data-hash="39641952d1" data-render="added">
-@@ -0,0 +76,11 @@ def annotate_tensor(
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="model_parallel_mesh" data-hash="5209209e9e" data-render="added">
+@@ -0,0 +87,15 @@ def _annotate_dense_parameter(tensor: torch.Tensor) -&gt; None:
 +
 +
-+def _annotate_dense_parameter(tensor: torch.Tensor) -&gt; None:
-+    """Annotate a trainable parameter on the axis the model shards it over.
++def model_parallel_mesh() -&gt; dict[str, spmd.MeshAxis]:
++    """Return the mesh Megatron's dense layers are typed against.
 +
-+    Only TP is the model's to declare. Whether the parameter is replicated across
-+    data parallelism, and that its gradient gets summed there, is a promise made
-+    by whichever wrapper performs that reduction (see
-+    ``DistributedDataParallel``), so it is left for that wrapper to assert.
++    Megatron does not build a DeviceMesh; it hands out process groups from
++    ``parallel_state``. The three that matter for typing dense computation are
++    tensor parallel, data parallel (without context parallel folded in), and
++    context parallel.
 +    """
-+    spmd.assert_type(tensor, {"TP": _tensor_parallel_type(tensor)})
++    return {
++        "TP": spmd.MeshAxis.of(parallel_state.get_tensor_model_parallel_group()),
++        "DP": spmd.MeshAxis.of(parallel_state.get_data_parallel_group(with_context_parallel=False)),
++        "CP": spmd.MeshAxis.of(parallel_state.get_context_parallel_group()),
++    }
+</pre>
+<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.forward" data-hash="61badae4d8" data-render="added">
+@@ -357,3 +358,8 @@ def unmap_weight_tensor(m):
+             self.enable_forward_pre_hook()
+         self.overlap_param_gather_with_optimizer_step = False
+ 
++    def forward(self, *inputs, **kwargs):
++        """Calls the wrapped module's forward() method."""
++        if spmd.is_type_checking():
++            self._assert_parameters_replicated()
++        return super().forward(*inputs, **kwargs)
+</pre>
+<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel._assert_parameters_replicated" data-hash="2ceede36d8" data-render="added">
+@@ -360,3 +366,27 @@ def forward(self, *inputs, **kwargs):
++
++    def _assert_parameters_replicated(self):
++        """Promise, on the type-checking mesh, that this wrapper reduces the gradients.
++
++        A parameter whose gradient is summed here is replicated (R) along the
++        axes of the reduction group: identical value on every rank, partial
++        gradient. The model only knows how its parameters are sharded and leaves
++        these axes to whichever wrapper performs the reduction.
++
++        The dense reduction group folds data and context parallelism together,
++        while the type-checking mesh may keep them as separate axes, so the
++        promise is made on each mesh axis the group contains. Expert parameters
++        are typed on the expert mesh, where their reduction group is an axis.
++        """
++        mesh = spmd.current_mesh()
++        dense_reduction_axis = spmd.MeshAxis.of(self.dp_cp_group)
++        for param in self.params_with_grad:
++            if getattr(param, 'allreduce', True):
++                for axis in mesh:
++                    if axis &lt;= dense_reduction_axis:
++                        spmd.assert_type(param, {axis: spmd.R})
++            else:
++                spmd.assert_type(param, {self.expt_dp_group: spmd.R})
++
+     def enable_forward_pre_hook(self):
+         """
+         Enable forward pre-hooks needed for param all-gather overlap with forward compute.
 </pre>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="annotate_tensor" data-hash="00397e5052" data-render="added">
 @@ -0,0 +63,13 @@ def _expert_tensor_parallel_type(tensor: torch.Tensor) -&gt; spmd.SpmdType:
@@ -353,70 +392,11 @@ pre.hunk { display: none; }
 +            if isinstance(value, torch.Tensor) and not value.requires_grad:
 +                annotate_tensor(value, tensor_parallel_type=spmd.R)
 </pre>
-<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.forward" data-hash="61badae4d8" data-render="added">
-@@ -357,3 +358,8 @@ def unmap_weight_tensor(m):
-             self.enable_forward_pre_hook()
-         self.overlap_param_gather_with_optimizer_step = False
- 
-+    def forward(self, *inputs, **kwargs):
-+        """Calls the wrapped module's forward() method."""
-+        if spmd.is_type_checking():
-+            self._assert_parameters_replicated()
-+        return super().forward(*inputs, **kwargs)
-</pre>
-<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel._assert_parameters_replicated" data-hash="2ceede36d8" data-render="added">
-@@ -360,3 +366,27 @@ def forward(self, *inputs, **kwargs):
-+
-+    def _assert_parameters_replicated(self):
-+        """Promise, on the type-checking mesh, that this wrapper reduces the gradients.
-+
-+        A parameter whose gradient is summed here is replicated (R) along the
-+        axes of the reduction group: identical value on every rank, partial
-+        gradient. The model only knows how its parameters are sharded and leaves
-+        these axes to whichever wrapper performs the reduction.
-+
-+        The dense reduction group folds data and context parallelism together,
-+        while the type-checking mesh may keep them as separate axes, so the
-+        promise is made on each mesh axis the group contains. Expert parameters
-+        are typed on the expert mesh, where their reduction group is an axis.
-+        """
-+        mesh = spmd.current_mesh()
-+        dense_reduction_axis = spmd.MeshAxis.of(self.dp_cp_group)
-+        for param in self.params_with_grad:
-+            if getattr(param, 'allreduce', True):
-+                for axis in mesh:
-+                    if axis &lt;= dense_reduction_axis:
-+                        spmd.assert_type(param, {axis: spmd.R})
-+            else:
-+                spmd.assert_type(param, {self.expt_dp_group: spmd.R})
-+
-     def enable_forward_pre_hook(self):
-         """
-         Enable forward pre-hooks needed for param all-gather overlap with forward compute.
-</pre>
 </section>
 
 <section id="two-meshes">
 <h2>Two meshes on the same ranks</h2>
-<!-- TODO: ETP x EDP x EP tiles the same ranks as TP x DP x CP but cuts them differently; expert computation is typed on its own mesh and reinterpreted back at the boundary. -->
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="model_parallel_mesh" data-hash="5209209e9e" data-render="added">
-@@ -0,0 +87,15 @@ def _annotate_dense_parameter(tensor: torch.Tensor) -&gt; None:
-+
-+
-+def model_parallel_mesh() -&gt; dict[str, spmd.MeshAxis]:
-+    """Return the mesh Megatron's dense layers are typed against.
-+
-+    Megatron does not build a DeviceMesh; it hands out process groups from
-+    ``parallel_state``. The three that matter for typing dense computation are
-+    tensor parallel, data parallel (without context parallel folded in), and
-+    context parallel.
-+    """
-+    return {
-+        "TP": spmd.MeshAxis.of(parallel_state.get_tensor_model_parallel_group()),
-+        "DP": spmd.MeshAxis.of(parallel_state.get_data_parallel_group(with_context_parallel=False)),
-+        "CP": spmd.MeshAxis.of(parallel_state.get_context_parallel_group()),
-+    }
-</pre>
+<!-- TODO: ETP x EDP x EP tiles the same ranks as TP x DP x CP but cuts them differently. Expert computation runs inside expert_parallel_region and is retagged, not moved, on the way out. Expert parameters are V on EP and sharded on ETP; EDP replication is again the reducer's promise. HybridEP dispatch folds EP and ETP the way DDP folds DP and CP. -->
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="expert_parallel_mesh" data-hash="98a1cb529f" data-render="added">
 @@ -0,0 +102,16 @@ def model_parallel_mesh() -&gt; dict[str, spmd.MeshAxis]:
 +
@@ -554,49 +534,6 @@ pre.hunk { display: none; }
 +        },
 +    )
 </pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/experts.py" data-symbol="TEGroupedMLP._fused_forward" data-hash="c35676443a">
-@@ -979,7 +980,11 @@ def _fused_forward(
-         # Note: The fused impl is stored in a tuple to avoid
-         # registering submodules.
-         if self._fused_ops is None:
--            self._fused_ops = (self._make_fused_ops(),)
-+            # Building the fused module is setup, not computation: it allocates
-+            # placeholder weights that are immediately replaced by this module's own
-+            # parameters, so it is excluded from SPMD type checking.
-+            with spmd.no_typecheck():
-+                self._fused_ops = (self._make_fused_ops(),)
-         (ops,) = self._fused_ops
- 
-         # Apply padding if needed
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/moe_utils.py" data-symbol="MoEAuxLossAutoScaler.spmd_typecheck" data-hash="3ac77dd373" data-render="added">
-@@ -264,6 +265,15 @@ def forward(ctx, output: torch.Tensor, aux_loss: torch.Tensor) -&gt; torch.Tensor:
-         ctx.save_for_backward(aux_loss)
-         return output
- 
-+    @staticmethod
-+    def spmd_typecheck(result, *, output):
-+        """The forward is the identity on ``output``.
-+
-+        ``aux_loss`` only contributes a gradient in backward, so it must not
-+        influence the result's type; the generic local rule would let it.
-+        """
-+        spmd.assert_type_like(result, output)
-+
-     @staticmethod
-     def backward(ctx, grad_output: torch.Tensor) -&gt; Tuple[torch.Tensor, torch.Tensor]:
-         """Compute and scale the gradient for auxiliary loss..
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/moe_utils.py" data-symbol="RouterGatingLinearFunction" data-hash="ce876e4785">
-@@ -1304,6 +1314,7 @@ def apply_biased_logits(logits, std, layer_number=None):
-     return RandomSTEShared.apply(logits, std, layer_number)
- 
- 
-+@spmd.register_local_autograd_function
- class RouterGatingLinearFunction(torch.autograd.Function):
-     """
-     Autograd function for router gating linear.
-</pre>
 <pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch.spmd_typecheck" data-hash="dbca75112b" data-render="added">
 @@ -440,6 +485,21 @@ def forward(
              handle,
@@ -635,113 +572,6 @@ pre.hunk { display: none; }
      def backward(ctx, grad_x):
          '''
 </pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_is_fake_process_group" data-hash="849b6f7202" data-render="added">
-@@ -350,3 +351,6 @@ def reset_hybrid_ep_buffer():
-     _hybrid_ep_buffer = None
- 
- 
-+def _is_fake_process_group(group: torch.distributed.ProcessGroup) -&gt; bool:
-+    """Whether ``group`` uses PyTorch's fake backend, which performs no communication."""
-+    return torch.distributed.get_backend(group) == "fake"
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_fake_dispatch" data-hash="fd6c905494" data-render="added">
-@@ -352,0 +357,21 @@ def _is_fake_process_group(group: torch.distributed.ProcessGroup) -&gt; bool:
-+
-+
-+def _fake_dispatch(x, routing_map, probs, num_local_experts, num_permuted_tokens):
-+    """Shape-faithful stand-in for the HybridEP dispatch kernel on a fake process group.
-+
-+    Rows of ``x`` are recycled to fill the permuted-token budget and token counts
-+    are spread evenly over the local experts. The returned handle carries what
-+    ``_fake_combine`` and the backward pass need, plus the overflow flag that the
-+    dispatcher reads from the real handle.
-+    """
-+    num_tokens = x.shape[0]
-+    rows = num_permuted_tokens if num_permuted_tokens is not None else int(routing_map.sum().item())
-+    indices = torch.arange(rows, device=x.device).remainder(num_tokens)
-+    dispatched_hidden = x.index_select(0, indices)
-+    dispatched_probs = probs.new_zeros(rows)
-+    tokens_per_expert = torch.full(
-+        (num_local_experts,), rows // num_local_experts, dtype=torch.long, device=x.device
-+    )
-+    overflow_flag = torch.zeros((), dtype=torch.int32, device=x.device)
-+    handle = (indices, num_tokens, overflow_flag)
-+    return dispatched_hidden, dispatched_probs, tokens_per_expert, handle
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_fake_combine" data-hash="5f9ef99e91" data-render="added">
-@@ -353,3 +378,11 @@ def _fake_dispatch(x, routing_map, probs, num_local_experts, num_permuted_tokens
-+
-+
-+def _fake_combine(x, handle):
-+    """Inverse of ``_fake_dispatch``: sum each token's rows back into its original slot."""
-+    indices, num_tokens, _ = handle
-+    return x.new_zeros(num_tokens, *x.shape[1:]).index_add_(0, indices, x)
-+
-+
- class HybridEPDispatch(torch.autograd.Function):
-     '''
-     Fused dispatch operation for permute + dispatch a2a + permute using the HybridEP backend
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch.forward" data-hash="c454f17c47">
-@@ -375,6 +408,18 @@ def forward(
-         '''
-         Forward pass of fused dispatch of the HybridEP backend
-         '''
-+        ctx.fake = _is_fake_process_group(group)
-+        if ctx.fake:
-+            # The kernel needs real inter-rank transport. The stand-in carries no
-+            # types of its own; ``spmd_typecheck`` states the contract for both.
-+            with spmd.no_typecheck():
-+                dispatched_hidden, dispatched_probs, tokens_per_expert, handle = _fake_dispatch(
-+                    x, routing_map, probs, num_local_experts, num_permuted_tokens
-+                )
-+            ctx.handle = handle
-+            ctx.probs_shape = probs.shape
-+            return dispatched_hidden, dispatched_probs, None, tokens_per_expert, handle
-+
-         if fused or num_blocks_permute is not None or num_blocks_unpermute is not None:
-             import inspect
-             import warnings
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch.backward" data-hash="3c97fe92c3">
-@@ -446,6 +506,10 @@ def backward(ctx, grad_x, grad_probs, grad_scaling_factor, grad_tokens_per_exper
-         Backward pass of fused dispatch of the HybridEP backend
-         '''
-         handle = ctx.handle
-+        if ctx.fake:
-+            combined_hidden = _fake_combine(grad_x, handle)
-+            combined_probs = grad_x.new_zeros(ctx.probs_shape)
-+            return (combined_hidden, None, combined_probs) + (None,) * 10
-         combined_hidden, combined_probs = _hybrid_ep_buffer.combine_with_unpermute(
-             hidden=grad_x,
-             probs=grad_probs,
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPCombine.forward" data-hash="cd1e140791">
-@@ -481,6 +545,11 @@ def forward(ctx, x, handle, num_permuted_tokens=None, pad_multiple=None, fused=F
-         '''
-         Forward pass of fused combine of the HybridEP backend
-         '''
-+        ctx.fake = isinstance(handle, tuple) and len(handle) == 3 and isinstance(handle[1], int)
-+        if ctx.fake:
-+            ctx.handle = handle
-+            with spmd.no_typecheck():
-+                return _fake_combine(x, handle)
-         combined_hidden, _ = _hybrid_ep_buffer.combine_with_unpermute(
-             hidden=x,
-             handle=handle,
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPCombine.backward" data-hash="3db60445f6">
-@@ -499,6 +573,9 @@ def backward(ctx, grad_x):
-         Backward pass of fused combine of the HybridEP backend
-         '''
-         handle = ctx.handle
-+        if ctx.fake:
-+            indices, _, _ = handle
-+            return grad_x.index_select(0, indices), None, None, None, None
-         dispatched_hidden, _, _, _, _ = _hybrid_ep_buffer.dispatch_with_permute(
-             hidden=grad_x,
-             scaling_factor=None,
-</pre>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dispatcher_state" data-hash="fcba4332b3" data-render="added">
 @@ -0,0 +182,11 @@ def _annotate_vocab_bounds(module: VocabParallelEmbedding) -&gt; None:
 +
@@ -760,7 +590,7 @@ pre.hunk { display: none; }
 
 <section id="meets-reality">
 <h2>Where the type system meets reality</h2>
-<!-- TODO: The escape hatches and glue: typed scalars for vocab bounds, no_typecheck around bookkeeping, force_eager so torch.compile does not hide ops, and contracts bolted onto Transformer Engine and fused kernels. -->
+<!-- TODO: The escape hatches and the glue, in order: vocab bounds as typed scalars; no_typecheck around bookkeeping (DDP gradient hooks, fused-op construction, the CPU RNG comparison); force_eager so torch.compile does not hide ops; contracts bolted onto Transformer Engine by name; local registrations for kernels that never communicate; two identity-on-output contracts where the generic local rule would be wrong. -->
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_vocab_bounds" data-hash="0271fe7d6e" data-render="added">
 @@ -0,0 +169,13 @@ def leave_expert_parallel_region(tensor: torch.Tensor) -&gt; torch.Tensor:
 +
@@ -830,6 +660,21 @@ pre.hunk { display: none; }
      def free_overlap_buffers(self):
          """Free overlap param-gather GPU buffers across all bucket groups."""
 </pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/experts.py" data-symbol="TEGroupedMLP._fused_forward" data-hash="c35676443a">
+@@ -979,7 +980,11 @@ def _fused_forward(
+         # Note: The fused impl is stored in a tuple to avoid
+         # registering submodules.
+         if self._fused_ops is None:
+-            self._fused_ops = (self._make_fused_ops(),)
++            # Building the fused module is setup, not computation: it allocates
++            # placeholder weights that are immediately replaced by this module's own
++            # parameters, so it is excluded from SPMD type checking.
++            with spmd.no_typecheck():
++                self._fused_ops = (self._make_fused_ops(),)
+         (ops,) = self._fused_ops
+ 
+         # Apply padding if needed
+</pre>
 <pre class="hunk" data-file="megatron/core/tensor_parallel/random.py" data-symbol="CudaRNGStatesTracker.fork" data-hash="7bb7f004e7">
 @@ -315,8 +316,11 @@ def fork(self, name=_MODEL_PARALLEL_RNG_TRACKER_NAME):
          try:
@@ -862,19 +707,6 @@ pre.hunk { display: none; }
 +    ):
 +        yield
 </pre>
-<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="_named_non_tensor_args" data-hash="54f01c0848" data-render="added">
-@@ -666,0 +675,10 @@ def __new__(
-+
-+    def _named_non_tensor_args(unpacker, values):
-+        """Name a tuple immediately unpacked into a function's first locals."""
-+        first_local = len(inspect.signature(unpacker).parameters)
-+        names = unpacker.__code__.co_varnames[first_local : first_local + len(values)]
-+        if len(names) != len(values):
-+            raise NotImplementedError(
-+                f"Could not identify all non-tensor arguments for {unpacker.__qualname__}"
-+            )
-+        return dict(zip(names, values))
-</pre>
 <pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="_assert_te_linear_types" data-hash="c2957a4f4f" data-render="added">
 @@ -666,0 +685,26 @@ def _named_non_tensor_args(unpacker, values):
 +
@@ -903,6 +735,19 @@ pre.hunk { display: none; }
 +            raise NotImplementedError(
 +                f"Unsupported Transformer Engine linear parallel mode {parallel_mode!r}"
 +            )
+</pre>
+<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="_named_non_tensor_args" data-hash="54f01c0848" data-render="added">
+@@ -666,0 +675,10 @@ def __new__(
++
++    def _named_non_tensor_args(unpacker, values):
++        """Name a tuple immediately unpacked into a function's first locals."""
++        first_local = len(inspect.signature(unpacker).parameters)
++        names = unpacker.__code__.co_varnames[first_local : first_local + len(values)]
++        if len(names) != len(values):
++            raise NotImplementedError(
++                f"Could not identify all non-tensor arguments for {unpacker.__qualname__}"
++            )
++        return dict(zip(names, values))
 </pre>
 <pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="_linear_spmd_typecheck" data-hash="36ae558f00" data-render="added">
 @@ -666,0 +711,7 @@ def _assert_te_linear_types(out, inp, options):
@@ -1087,6 +932,34 @@ pre.hunk { display: none; }
      """
      Autograd function to make a viewless tensor.
 </pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/moe_utils.py" data-symbol="RouterGatingLinearFunction" data-hash="ce876e4785">
+@@ -1304,6 +1314,7 @@ def apply_biased_logits(logits, std, layer_number=None):
+     return RandomSTEShared.apply(logits, std, layer_number)
+ 
+ 
++@spmd.register_local_autograd_function
+ class RouterGatingLinearFunction(torch.autograd.Function):
+     """
+     Autograd function for router gating linear.
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/moe_utils.py" data-symbol="MoEAuxLossAutoScaler.spmd_typecheck" data-hash="3ac77dd373" data-render="added">
+@@ -264,6 +265,15 @@ def forward(ctx, output: torch.Tensor, aux_loss: torch.Tensor) -&gt; torch.Tensor:
+         ctx.save_for_backward(aux_loss)
+         return output
+ 
++    @staticmethod
++    def spmd_typecheck(result, *, output):
++        """The forward is the identity on ``output``.
++
++        ``aux_loss`` only contributes a gradient in backward, so it must not
++        influence the result's type; the generic local rule would let it.
++        """
++        spmd.assert_type_like(result, output)
++
+     @staticmethod
+     def backward(ctx, grad_output: torch.Tensor) -&gt; Tuple[torch.Tensor, torch.Tensor]:
+         """Compute and scale the gradient for auxiliary loss..
+</pre>
 <pre class="hunk" data-file="megatron/core/transformer/multi_token_prediction.py" data-symbol="MTPLossAutoScaler.spmd_typecheck" data-hash="55781a629a" data-render="added">
 @@ -582,6 +583,15 @@ def forward(ctx, output: torch.Tensor, mtp_loss: torch.Tensor):
          ctx.save_for_backward(mtp_loss)
@@ -1109,7 +982,7 @@ pre.hunk { display: none; }
 
 <section id="one-gpu">
 <h2>Checking a 256-GPU job on one GPU</h2>
-<!-- TODO: Fake process groups impersonate ranks of the MLPerf DeepSeek-V3 job so a real TE forward/backward can be type-checked on a single GPU. -->
+<!-- TODO: PyTorch's fake process-group backend impersonates one rank of the MLPerf DeepSeek-V3 job. First the trick and the three small unit tests that use it directly; then the fake HybridEP transport that lets the real dispatcher run without NVSHMEM; then the job itself: config, model, DDP wrap, and the two pipeline chunks that cover every layer structure. -->
 <pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="_fake_distributed" data-hash="1c1edca18a" data-render="added">
 @@ -0,0 +204,23 @@ def _wrap_in_ddp(config: MLATransformerConfig, model: GPTModel) -&gt; DistributedDa
 +
@@ -1298,6 +1171,113 @@ pre.hunk { display: none; }
 +        assert (
 +            spmd.get_axis_local_type(weight, parallel_state.get_context_parallel_group()) is spmd.R
 +        )
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_is_fake_process_group" data-hash="849b6f7202" data-render="added">
+@@ -350,3 +351,6 @@ def reset_hybrid_ep_buffer():
+     _hybrid_ep_buffer = None
+ 
+ 
++def _is_fake_process_group(group: torch.distributed.ProcessGroup) -&gt; bool:
++    """Whether ``group`` uses PyTorch's fake backend, which performs no communication."""
++    return torch.distributed.get_backend(group) == "fake"
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_fake_dispatch" data-hash="fd6c905494" data-render="added">
+@@ -352,0 +357,21 @@ def _is_fake_process_group(group: torch.distributed.ProcessGroup) -&gt; bool:
++
++
++def _fake_dispatch(x, routing_map, probs, num_local_experts, num_permuted_tokens):
++    """Shape-faithful stand-in for the HybridEP dispatch kernel on a fake process group.
++
++    Rows of ``x`` are recycled to fill the permuted-token budget and token counts
++    are spread evenly over the local experts. The returned handle carries what
++    ``_fake_combine`` and the backward pass need, plus the overflow flag that the
++    dispatcher reads from the real handle.
++    """
++    num_tokens = x.shape[0]
++    rows = num_permuted_tokens if num_permuted_tokens is not None else int(routing_map.sum().item())
++    indices = torch.arange(rows, device=x.device).remainder(num_tokens)
++    dispatched_hidden = x.index_select(0, indices)
++    dispatched_probs = probs.new_zeros(rows)
++    tokens_per_expert = torch.full(
++        (num_local_experts,), rows // num_local_experts, dtype=torch.long, device=x.device
++    )
++    overflow_flag = torch.zeros((), dtype=torch.int32, device=x.device)
++    handle = (indices, num_tokens, overflow_flag)
++    return dispatched_hidden, dispatched_probs, tokens_per_expert, handle
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_fake_combine" data-hash="5f9ef99e91" data-render="added">
+@@ -353,3 +378,11 @@ def _fake_dispatch(x, routing_map, probs, num_local_experts, num_permuted_tokens
++
++
++def _fake_combine(x, handle):
++    """Inverse of ``_fake_dispatch``: sum each token's rows back into its original slot."""
++    indices, num_tokens, _ = handle
++    return x.new_zeros(num_tokens, *x.shape[1:]).index_add_(0, indices, x)
++
++
+ class HybridEPDispatch(torch.autograd.Function):
+     '''
+     Fused dispatch operation for permute + dispatch a2a + permute using the HybridEP backend
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch.forward" data-hash="c454f17c47">
+@@ -375,6 +408,18 @@ def forward(
+         '''
+         Forward pass of fused dispatch of the HybridEP backend
+         '''
++        ctx.fake = _is_fake_process_group(group)
++        if ctx.fake:
++            # The kernel needs real inter-rank transport. The stand-in carries no
++            # types of its own; ``spmd_typecheck`` states the contract for both.
++            with spmd.no_typecheck():
++                dispatched_hidden, dispatched_probs, tokens_per_expert, handle = _fake_dispatch(
++                    x, routing_map, probs, num_local_experts, num_permuted_tokens
++                )
++            ctx.handle = handle
++            ctx.probs_shape = probs.shape
++            return dispatched_hidden, dispatched_probs, None, tokens_per_expert, handle
++
+         if fused or num_blocks_permute is not None or num_blocks_unpermute is not None:
+             import inspect
+             import warnings
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch.backward" data-hash="3c97fe92c3">
+@@ -446,6 +506,10 @@ def backward(ctx, grad_x, grad_probs, grad_scaling_factor, grad_tokens_per_exper
+         Backward pass of fused dispatch of the HybridEP backend
+         '''
+         handle = ctx.handle
++        if ctx.fake:
++            combined_hidden = _fake_combine(grad_x, handle)
++            combined_probs = grad_x.new_zeros(ctx.probs_shape)
++            return (combined_hidden, None, combined_probs) + (None,) * 10
+         combined_hidden, combined_probs = _hybrid_ep_buffer.combine_with_unpermute(
+             hidden=grad_x,
+             probs=grad_probs,
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPCombine.forward" data-hash="cd1e140791">
+@@ -481,6 +545,11 @@ def forward(ctx, x, handle, num_permuted_tokens=None, pad_multiple=None, fused=F
+         '''
+         Forward pass of fused combine of the HybridEP backend
+         '''
++        ctx.fake = isinstance(handle, tuple) and len(handle) == 3 and isinstance(handle[1], int)
++        if ctx.fake:
++            ctx.handle = handle
++            with spmd.no_typecheck():
++                return _fake_combine(x, handle)
+         combined_hidden, _ = _hybrid_ep_buffer.combine_with_unpermute(
+             hidden=x,
+             handle=handle,
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPCombine.backward" data-hash="3db60445f6">
+@@ -499,6 +573,9 @@ def backward(ctx, grad_x):
+         Backward pass of fused combine of the HybridEP backend
+         '''
+         handle = ctx.handle
++        if ctx.fake:
++            indices, _, _ = handle
++            return grad_x.index_select(0, indices), None, None, None, None
+         dispatched_hidden, _, _, _, _ = _hybrid_ep_buffer.dispatch_with_permute(
+             hidden=grad_x,
+             scaling_factor=None,
 </pre>
 <pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="_make_mlperf_deepseek_v3_config" data-hash="91f8e91db2" data-render="added">
 @@ -0,0 +27,114 @@
@@ -1630,7 +1610,16 @@ pre.hunk { display: none; }
 
 <section id="everything-else">
 <h2>Everything else</h2>
-<!-- TODO: Packaging, the public surface of megatron.core.spmd, and the import lines that the rest of the change needs. -->
+<!-- TODO: The public surface of megatron.core.spmd, packaging, and the import lines the rest of the change needs. -->
+<pre class="hunk" data-file="megatron/core/spmd/__init__.py" data-symbol="&lt;module&gt;" data-hash="343e405faa" data-render="added">
+@@ -0,0 +1,6 @@
++"""Optional SPMD type-checking integration for Megatron Core."""
++
++from .annotations import annotate_model, annotate_tensor
++from .checker import typecheck
++
++__all__ = ["annotate_model", "annotate_tensor", "typecheck"]
+</pre>
 <pre class="hunk" data-file="pyproject.toml" data-symbol="&lt;hunk 1&gt;" data-hash="e5a349199a">
 @@ -63,6 +63,10 @@ Download = "https://github.com/NVIDIA/Megatron-LM/releases"
  Homepage = "https://github.com/NVIDIA/Megatron-LM"
@@ -1724,15 +1713,6 @@ pre.hunk { display: none; }
  [[package]]
  name = "sqlalchemy"
  version = "2.0.49"
-</pre>
-<pre class="hunk" data-file="megatron/core/spmd/__init__.py" data-symbol="&lt;module&gt;" data-hash="343e405faa" data-render="added">
-@@ -0,0 +1,6 @@
-+"""Optional SPMD type-checking integration for Megatron Core."""
-+
-+from .annotations import annotate_model, annotate_tensor
-+from .checker import typecheck
-+
-+__all__ = ["annotate_model", "annotate_tensor", "typecheck"]
 </pre>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="&lt;module&gt;" data-hash="47f11f102e" data-render="added">
 @@ -0,0 +1,19 @@
@@ -1892,131 +1872,5 @@ pre.hunk { display: none; }
 </pre>
 </section>
 
-<script>
-(function () {
-  var meta = function (n) { var e = document.querySelector('meta[name="tour-' + n + '"]'); return e ? e.content : ''; };
-  var repo = meta('repo'), head = meta('head'), compare = meta('compare');
-
-  function sha256hex(s) {
-    if (!(window.crypto && crypto.subtle)) return Promise.resolve(null);
-    return crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)).then(function (b) {
-      return Array.prototype.map.call(new Uint8Array(b), function (x) { return x.toString(16).padStart(2, '0'); }).join('');
-    });
-  }
-
-  function parse(text) {
-    var rows = [], o = 0, n = 0, first = true;
-    text = text.replace(/^\n/, '').replace(/\n$/, '');
-    text.split('\n').forEach(function (line) {
-      var m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@ ?(.*)$/.exec(line);
-      if (m) {
-        o = +m[1]; n = +m[2];
-        if (!first) rows.push({ sep: true, text: m[3] });
-        first = false;
-        return;
-      }
-      if (line.charAt(0) === '\\') return;
-      var tag = line.charAt(0) || ' ', body = line.slice(1);
-      if (tag !== '+' && tag !== '-') { tag = ' '; body = line.slice(line.charAt(0) === ' ' ? 1 : 0); }
-      var row = { tag: tag, text: body, old: null, new: null };
-      if (tag !== '+') row.old = o++;
-      if (tag !== '-') row.new = n++;
-      rows.push(row);
-    });
-    return rows;
-  }
-
-  function lineSet(spec) {
-    if (!spec) return null;
-    var set = {};
-    spec.split(',').forEach(function (part) {
-      var m = /^\s*(\d+)(?:\s*-\s*(\d+))?\s*$/.exec(part);
-      if (!m) return;
-      var a = +m[1], b = m[2] ? +m[2] : a;
-      for (var i = a; i <= b; i++) set[i] = true;
-    });
-    return set;
-  }
-
-  function el(tag, cls, text) {
-    var e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (text != null) e.textContent = text;
-    return e;
-  }
-
-  function render(pre) {
-    var file = pre.getAttribute('data-file') || '', symbol = pre.getAttribute('data-symbol') || '';
-    var mode = pre.getAttribute('data-render') || 'diff';
-    var only = lineSet(pre.getAttribute('data-lines'));
-    var collapse = pre.hasAttribute('data-collapse');
-    var rows = parse(pre.textContent);
-
-    // Deleted rows sit at the position of the next new-side line.
-    var nextNew = null;
-    for (var i = rows.length - 1; i >= 0; i--) {
-      if (rows[i].sep) continue;
-      if (rows[i].new != null) nextNew = rows[i].new;
-      rows[i].at = rows[i].new != null ? rows[i].new : nextNew;
-    }
-    var kept = [];
-    rows.forEach(function (r, idx) {
-      if (r.sep) { kept.push(r); return; }
-      if (mode !== 'diff' && r.tag === '-') return;
-      if (collapse && r.tag === ' ') return;
-      if (only && !(r.at != null && only[r.at])) return;
-      r.idx = idx;
-      kept.push(r);
-    });
-
-    var box = el('div', 'tour');
-    var headRow = el('div', 'tour-head');
-    var fileLink = el('a', null, file);
-    fileLink.href = compare;
-    headRow.appendChild(fileLink);
-    headRow.appendChild(el('span', 'sym', symbol));
-    var blob = el('a', 'sym', 'view file');
-    blob.href = 'https://github.com/' + repo + '/blob/' + head + '/' + file;
-    headRow.appendChild(blob);
-    box.appendChild(headRow);
-    sha256hex(file).then(function (h) { if (h) fileLink.href = compare + '#diff-' + h; });
-
-    var table = el('table'), tbody = el('tbody');
-    var prev = null, pendingSep = null;
-    kept.forEach(function (r) {
-      if (r.sep) { pendingSep = r; return; }
-      var gap = prev && !((r.old != null && prev.old != null && r.old === prev.old + 1) || (r.new != null && prev.new != null && r.new === prev.new + 1) || (r.at != null && r.at === prev.at) || (prev.tag === '-' && r.new === prev.at));
-      if (pendingSep || gap) {
-        var sep = el('tr', 'sep'), td = el('td', null, pendingSep && pendingSep.text ? '\u22ef ' + pendingSep.text : '\u22ef');
-        td.colSpan = 4;
-        sep.appendChild(td);
-        tbody.appendChild(sep);
-        pendingSep = null;
-      }
-      var tr = el('tr');
-      if (mode !== 'added') tr.className = r.tag === '+' ? 'add' : r.tag === '-' ? 'del' : 'ctx';
-      if (mode === 'diff') tr.appendChild(el('td', 'ln old', r.old != null ? String(r.old) : ''));
-      var tdNew = el('td', 'ln new');
-      if (r.new != null) {
-        var a = el('a', null, String(r.new));
-        a.href = 'https://github.com/' + repo + '/blob/' + head + '/' + file + '#L' + r.new;
-        tdNew.appendChild(a);
-      }
-      tr.appendChild(tdNew);
-      if (mode !== 'added') tr.appendChild(el('td', 'mk', r.tag === ' ' ? '' : r.tag));
-      tr.appendChild(el('td', 'code', r.text));
-      tbody.appendChild(tr);
-      prev = r;
-    });
-    table.appendChild(tbody);
-    box.appendChild(table);
-    pre.insertAdjacentElement('afterend', box);
-  }
-
-  document.addEventListener('DOMContentLoaded', function () {
-    Array.prototype.forEach.call(document.querySelectorAll('pre.hunk'), render);
-  });
-})();
-</script>
 </body>
 </html>

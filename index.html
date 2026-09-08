@@ -185,7 +185,7 @@ TODO: switch DSv3 to global spmd types
 
 <section id="who-declares-what">
 <h2>Handling FSDP</h2>
-<!-- TODO: The model asserts only the axis it shards (TP, read off Megatron's parameter attributes). DDP asserts R on every mesh axis inside its dp_cp reduction group, because its backward collective is what makes that promise true; the mesh keeps DP and CP separate, so the promise is folded onto each. Tensors with no gradient are the model's alone to type. annotate_model ties it together. -->
+<!-- TODO: The model asserts only the axis it shards (TP, read off Megatron's parameter attributes). DDP asserts R on every mesh axis inside its dp_cp reduction group, because its backward collective is what makes that promise true; the mesh keeps DP and CP separate, so the promise is folded onto each. Tensors with no gradient are the model's alone to type. annotate_model ties it together. DDP's own gradient accumulation and reduction are bookkeeping, not model computation, so they run under no_typecheck. -->
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dense_parameter" data-hash="39641952d1" data-render="added">
 @@ -0,0 +76,11 @@ _annotate_dense_parameter
 +
@@ -287,6 +287,45 @@ TODO: switch DSv3 to global spmd types
      def enable_forward_pre_hook(self):
          """
          Enable forward pre-hooks needed for param all-gather overlap with forward compute.
+</pre>
+<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel._make_backward_post_hook.hook" data-hash="e837028bb2">
+@@ -433,12 +463,16 @@ DistributedDataParallel._make_backward_post_hook.hook
+             if is_graph_capturing():
+                 return
+ 
+-            if param in self.param_to_bucket_group:
+-                assert param.requires_grad
+-                if self.ddp_config.overlap_grad_reduce:
+-                    assert (
+-                        param.grad is not None
+-                    ), 'param.grad being None is not safe when overlap_grad_reduce is True'
++            if param not in self.param_to_bucket_group:
++                return
++            assert param.requires_grad
++            if self.ddp_config.overlap_grad_reduce:
++                assert (
++                    param.grad is not None
++                ), 'param.grad being None is not safe when overlap_grad_reduce is True'
++            # Gradient accumulation and reduction are this wrapper's own bookkeeping,
++            # not model computation, so they are not type-checked.
++            with spmd.no_typecheck():
+                 if param.grad is not None and (
+                     not param.grad_added_to_main_grad or getattr(param, 'zero_out_wgrad', False)
+                 ):
+</pre>
+<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.start_grad_sync" data-hash="ca273d7a48">
+@@ -532,8 +566,9 @@ DistributedDataParallel.start_grad_sync
+         calls. When overlap_grad_reduce is set to False, calls synchronous
+         communication ops.
+         """
+-        for bucket_group in self.bucket_groups + self.expert_parallel_bucket_groups:
+-            bucket_group.start_grad_sync()
++        with spmd.no_typecheck():
++            for bucket_group in self.bucket_groups + self.expert_parallel_bucket_groups:
++                bucket_group.start_grad_sync()
+ 
+     def finish_grad_sync(self, force_all_reduce: Optional[bool] = False):
+         """
 </pre>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="annotate_tensor" data-hash="00397e5052" data-render="added">
 @@ -0,0 +63,13 @@ annotate_tensor
@@ -584,46 +623,7 @@ TODO: switch DSv3 to global spmd types
 
 <section id="no-typecheck">
 <h2>Opting out with no_typecheck</h2>
-<!-- TODO: Some code runs tensor ops that are not model computation: DDP's gradient accumulation and bucket reductions, building a fused module whose placeholder weights are thrown away, comparing host RNG state. no_typecheck hides them from the checker so it never has to type them; the contract each protects is stated elsewhere. -->
-<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel._make_backward_post_hook.hook" data-hash="e837028bb2">
-@@ -433,12 +463,16 @@ DistributedDataParallel._make_backward_post_hook.hook
-             if is_graph_capturing():
-                 return
- 
--            if param in self.param_to_bucket_group:
--                assert param.requires_grad
--                if self.ddp_config.overlap_grad_reduce:
--                    assert (
--                        param.grad is not None
--                    ), 'param.grad being None is not safe when overlap_grad_reduce is True'
-+            if param not in self.param_to_bucket_group:
-+                return
-+            assert param.requires_grad
-+            if self.ddp_config.overlap_grad_reduce:
-+                assert (
-+                    param.grad is not None
-+                ), 'param.grad being None is not safe when overlap_grad_reduce is True'
-+            # Gradient accumulation and reduction are this wrapper's own bookkeeping,
-+            # not model computation, so they are not type-checked.
-+            with spmd.no_typecheck():
-                 if param.grad is not None and (
-                     not param.grad_added_to_main_grad or getattr(param, 'zero_out_wgrad', False)
-                 ):
-</pre>
-<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.start_grad_sync" data-hash="ca273d7a48">
-@@ -532,8 +566,9 @@ DistributedDataParallel.start_grad_sync
-         calls. When overlap_grad_reduce is set to False, calls synchronous
-         communication ops.
-         """
--        for bucket_group in self.bucket_groups + self.expert_parallel_bucket_groups:
--            bucket_group.start_grad_sync()
-+        with spmd.no_typecheck():
-+            for bucket_group in self.bucket_groups + self.expert_parallel_bucket_groups:
-+                bucket_group.start_grad_sync()
- 
-     def finish_grad_sync(self, force_all_reduce: Optional[bool] = False):
-         """
-</pre>
+<!-- TODO: Some code runs tensor ops that are not model computation: building a fused module whose placeholder weights are thrown away, comparing host RNG state. no_typecheck hides them from the checker so it never has to type them; the contract each protects is stated elsewhere. -->
 <pre class="hunk" data-file="megatron/core/transformer/moe/experts.py" data-symbol="TEGroupedMLP._fused_forward" data-hash="c35676443a">
 @@ -979,7 +980,11 @@ TEGroupedMLP._fused_forward
          # Note: The fused impl is stored in a tuple to avoid

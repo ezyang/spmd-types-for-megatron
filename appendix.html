@@ -166,8 +166,8 @@
 </pre>
 </section>
 
-<section id="no-typecheck">
-<h2>Opting out with no_typecheck</h2>
+<section id="who-declares-what">
+<h2>Handling FSDP</h2>
 <pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.finish_grad_sync" data-hash="eec13b8de0">
 @@ -544,8 +579,9 @@ DistributedDataParallel.finish_grad_sync
          calls to complete. When overlap_grad_reduce is set to False, calls synchronous

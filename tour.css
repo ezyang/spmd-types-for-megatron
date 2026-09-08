@@ -40,3 +40,8 @@ pre.hunk { display: none; }
 .tour tr.del td.ln { background: #ffd7d5; }
 .tour tr.sep td { background: #f1f8ff; color: #57606a; padding: 4px 8px; }
 .tour tr.sep td.ln { background: #dbedff; }
+.tour td.code a.ref { color: inherit; text-decoration: underline dotted #9a9a9a; text-underline-offset: 2px; }
+.tour td.code a.ref:hover { color: #0550ae; text-decoration-style: solid; }
+a.ref > code { color: #0550ae; }
+.tour .def { font-weight: bold; scroll-margin-top: 1em; }
+.tour .def:target { background: #fff3b0; outline: 2px solid #f2d36b; }

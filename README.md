@@ -34,7 +34,11 @@ hunks from the same file (nothing but whitespace or comments between them)
 share one box and file header. Each hunk opens with a GitHub-style
 `@@ -a,b +c,d @@ context` row, omitted when it continues exactly where the
 previous hunk ended (per-symbol pieces of a new file); each hunk keeps its own
-`file::symbol` anchor. On wide
+`file::symbol` anchor. Cross-links are automatic and deliberately dumb: every
+added `def NAME` on a page becomes the anchor `#def-NAME`, and every exact
+identifier match of `NAME` in that page's hunks (plus prose `<code>NAME</code>`
+or `<code>NAME()</code>`) links to it; a name added more than once on the page
+is ambiguous and not linked. On wide
 viewports it draws a TOC sidebar: sections, and under each the files whose hunks
 appear there; `n/N` marks a file whose other hunks (in this page) sit under other
 headings, and its tooltip names them. `shot.py` renders a page in headless Chrome

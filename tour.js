@@ -122,7 +122,10 @@
       }
       tr.appendChild(tdNew);
       if (mode !== 'added') tr.appendChild(el('td', 'mk', r.tag === ' ' ? '' : r.tag));
-      tr.appendChild(el('td', 'code', r.text));
+      var code = el('td', 'code', r.text);
+      tr.appendChild(code);
+      var d = r.tag === '+' && DEF_RE.exec(r.text);
+      if (d) (defs[d[1]] = defs[d[1]] || []).push(code);
       tbody.appendChild(tr);
       prev = r;
     });
@@ -131,6 +134,65 @@
     hunk.appendChild(table);
     box.appendChild(hunk);
     return box;
+  }
+
+  // Cross-links: every added ``def NAME`` on this page is an anchor, and every
+  // exact-token occurrence of NAME elsewhere links to it.  Deliberately dumb:
+  // no scoping, no resolution; a name added more than once on the page is
+  // ambiguous and left alone.
+  var DEF_RE = /^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)/;
+  var IDENT_RE = /[A-Za-z_]\w*/g;
+  var defs = {};
+
+  function crosslink() {
+    var names = {};
+    Object.keys(defs).forEach(function (n) {
+      if (defs[n].length !== 1) return;
+      var td = defs[n][0], m = DEF_RE.exec(td.textContent), at = m[0].length - n.length;
+      var span = el('span', 'def', n);
+      span.id = 'def-' + n;
+      td.textContent = '';
+      td.appendChild(document.createTextNode(m[0].slice(0, at)));
+      td.appendChild(span);
+      td.appendChild(document.createTextNode(m.input.slice(m[0].length)));
+      names[n] = '#def-' + n;
+    });
+    if (!Object.keys(names).length) return;
+
+    function linkText(node) {
+      var text = node.nodeValue, frag = null, last = 0, m;
+      IDENT_RE.lastIndex = 0;
+      while ((m = IDENT_RE.exec(text))) {
+        var n = m[0];
+        if (!names[n]) continue;
+        // ``def NAME`` is a definition site (the anchor itself, or a deleted
+        // or duplicate def), not a reference.
+        if (/\bdef\s+$/.test(text.slice(0, m.index))) continue;
+        frag = frag || document.createDocumentFragment();
+        frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+        var a = el('a', 'ref', n);
+        a.href = names[n];
+        frag.appendChild(a);
+        last = m.index + n.length;
+      }
+      if (!frag) return;
+      frag.appendChild(document.createTextNode(text.slice(last)));
+      node.parentNode.replaceChild(frag, node);
+    }
+
+    Array.prototype.forEach.call(document.querySelectorAll('.tour tr:not(.sep) td.code'), function (td) {
+      Array.prototype.slice.call(td.childNodes).forEach(function (c) { if (c.nodeType === 3) linkText(c); });
+    });
+    // Prose: <code>NAME</code> or <code>NAME()</code>, unless already a link.
+    Array.prototype.forEach.call(document.querySelectorAll('code'), function (c) {
+      if (c.closest('a, pre, .tour')) return;
+      var m = /^([A-Za-z_]\w*)(\(\))?$/.exec(c.textContent);
+      if (!m || !names[m[1]]) return;
+      var a = el('a', 'ref');
+      a.href = names[m[1]];
+      c.parentNode.insertBefore(a, c);
+      a.appendChild(c);
+    });
   }
 
   // Two hunks are adjacent when only whitespace and comments sit between them.
@@ -245,6 +307,7 @@
 
   document.addEventListener('DOMContentLoaded', function () {
     renderAll();
+    crosslink();
     toc();
   });
 })();

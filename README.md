@@ -17,7 +17,7 @@ elements, the `tour-*` meta tags, inserted `<!-- SYNC:... -->` comments, and an
 appended `<section id="unplaced">`. Everything else is yours. Never edit hunk
 text by hand; move the whole `<pre>` instead, and shape it with attributes:
 
-    data-render="diff"|"added"|"new"   gutter diff (default) / plain code / new side only
+    data-render="diff"|"added"|"new"   gutter diff (default) / new side, no gutter, adds still green / new side only
     data-lines="5-20,30"               show only these new-side lines
     data-collapse                      hide context lines
 
@@ -29,5 +29,15 @@ the diff of the diff. Delete markers yourself once the prose is right; run
 `check` before publishing. `init` overwrites `scratch.html`; it never
 overwrites an existing `index.html`.
 
-The renderer is `tour.css` and `tour.js`, loaded by every page. Pushing `main` deploys the repo root to GitHub Pages via
+The renderer is `tour.css` and `tour.js`, loaded by every page. Consecutive
+hunks from the same file (nothing but whitespace or comments between them)
+share one box and file header. Each hunk opens with a GitHub-style
+`@@ -a,b +c,d @@ context` row, omitted when it continues exactly where the
+previous hunk ended (per-symbol pieces of a new file); each hunk keeps its own
+`file::symbol` anchor. On wide
+viewports it draws a TOC sidebar: sections, and under each the files whose hunks
+appear there; `n/N` marks a file whose other hunks (in this page) sit under other
+headings, and its tooltip names them. `shot.py` renders a page in headless Chrome
+for checking layout (`python3 shot.py index.html --scroll '#some-section'`; needs
+Playwright's chrome-headless-shell or the Google Chrome app). Pushing `main` deploys the repo root to GitHub Pages via
 `.github/workflows/pages.yml` (set Pages source to "GitHub Actions" once).

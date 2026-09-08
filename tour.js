@@ -10,14 +10,13 @@
   }
 
   function parse(text) {
-    var rows = [], o = 0, n = 0, first = true;
+    var rows = [], o = 0, n = 0;
     text = text.replace(/^\n/, '').replace(/\n$/, '');
     text.split('\n').forEach(function (line) {
-      var m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@ ?(.*)$/.exec(line);
+      var m = /^(@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@) ?(.*)$/.exec(line);
       if (m) {
-        o = +m[1]; n = +m[2];
-        if (!first) rows.push({ sep: true, text: m[3] });
-        first = false;
+        o = +m[2]; n = +m[3];
+        rows.push({ sep: true, range: m[1], text: m[4] });
         return;
       }
       if (line.charAt(0) === '\\') return;
@@ -50,7 +49,7 @@
     return e;
   }
 
-  function render(pre) {
+  function render(pre, box, grouped) {
     var file = pre.getAttribute('data-file') || '', symbol = pre.getAttribute('data-symbol') || '';
     var mode = pre.getAttribute('data-render') || 'diff';
     var only = lineSet(pre.getAttribute('data-lines'));
@@ -74,33 +73,46 @@
       kept.push(r);
     });
 
-    var box = el('div', 'tour');
-    box.id = file + '::' + symbol;
-    var headRow = el('div', 'tour-head');
-    var fileLink = el('a', null, file);
-    fileLink.href = compare;
-    headRow.appendChild(fileLink);
-    headRow.appendChild(el('span', 'sym', symbol));
-    var blob = el('a', 'sym', 'view file');
-    blob.href = 'https://github.com/' + repo + '/blob/' + head + '/' + file;
-    headRow.appendChild(blob);
-    box.appendChild(headRow);
-    sha256hex(file).then(function (h) { if (h) fileLink.href = compare + '#diff-' + h; });
+    // A run of adjacent same-file hunks shares one box and one file header;
+    // each hunk then gets its own symbol row.  A lone hunk keeps the symbol
+    // in the header.
+    var hunk = el('div', 'tour-hunk');
+    hunk.id = file + '::' + symbol;
+    if (!box) {
+      box = el('div', 'tour');
+      var headRow = el('div', 'tour-head');
+      var fileLink = el('a', null, file);
+      fileLink.href = compare;
+      headRow.appendChild(fileLink);
+      var blob = el('a', 'sym', 'view file');
+      blob.href = 'https://github.com/' + repo + '/blob/' + head + '/' + file;
+      headRow.appendChild(blob);
+      box.appendChild(headRow);
+      sha256hex(file).then(function (h) { if (h) fileLink.href = compare + '#diff-' + h; });
+      pre.insertAdjacentElement('afterend', box);
+    }
 
     var table = el('table'), tbody = el('tbody');
-    var prev = null, pendingSep = null;
+    // Within a box, a hunk that picks up exactly where the previous one ended
+    // (per-symbol units of a brand-new file) is contiguous: no header row.
+    var prev = box.tourLast || null, pendingSep = null;
     kept.forEach(function (r) {
       if (r.sep) { pendingSep = r; return; }
       var gap = prev && !((r.old != null && prev.old != null && r.old === prev.old + 1) || (r.new != null && prev.new != null && r.new === prev.new + 1) || (r.at != null && r.at === prev.at) || (prev.tag === '-' && r.new === prev.at));
-      if (pendingSep || gap) {
-        var sep = el('tr', 'sep'), td = el('td', null, pendingSep && pendingSep.text ? '\u22ef ' + pendingSep.text : '\u22ef');
-        td.colSpan = 4;
+      if (!prev || gap || (pendingSep && !prev.fromBox)) {
+        // GitHub-style hunk header: tinted gutter, then "@@ -a,b +c,d @@ context".
+        var sep = el('tr', 'sep');
+        var gutter = mode === 'diff' ? 2 : 1;
+        for (var g = 0; g < gutter; g++) sep.appendChild(el('td', 'ln'));
+        var label = pendingSep ? pendingSep.range + (pendingSep.text ? ' ' + pendingSep.text : '') : '\u22ef';
+        var td = el('td', 'code', label);
+        td.colSpan = mode === 'added' ? 1 : 2;
         sep.appendChild(td);
         tbody.appendChild(sep);
-        pendingSep = null;
       }
+      pendingSep = null;
       var tr = el('tr');
-      if (mode !== 'added') tr.className = r.tag === '+' ? 'add' : r.tag === '-' ? 'del' : 'ctx';
+      tr.className = r.tag === '+' ? 'add' : r.tag === '-' ? 'del' : 'ctx';
       if (mode === 'diff') tr.appendChild(el('td', 'ln old', r.old != null ? String(r.old) : ''));
       var tdNew = el('td', 'ln new');
       if (r.new != null) {
@@ -114,12 +126,125 @@
       tbody.appendChild(tr);
       prev = r;
     });
+    if (prev && !prev.fromBox) box.tourLast = { old: prev.old, new: prev.new, at: prev.at, tag: prev.tag, fromBox: true };
     table.appendChild(tbody);
-    box.appendChild(table);
-    pre.insertAdjacentElement('afterend', box);
+    hunk.appendChild(table);
+    box.appendChild(hunk);
+    return box;
+  }
+
+  // Two hunks are adjacent when only whitespace and comments sit between them.
+  function adjacent(a, b) {
+    if (a.getAttribute('data-file') !== b.getAttribute('data-file')) return false;
+    for (var n = a.nextSibling; n && n !== b; n = n.nextSibling) {
+      if (n.nodeType === 1 || (n.nodeType === 3 && n.textContent.trim())) return false;
+    }
+    return true;
+  }
+
+  function renderAll() {
+    var pres = Array.prototype.slice.call(document.querySelectorAll('pre.hunk'));
+    for (var i = 0; i < pres.length;) {
+      var j = i;
+      while (j + 1 < pres.length && adjacent(pres[j], pres[j + 1])) j++;
+      var box = null, grouped = j > i;
+      for (var k = i; k <= j; k++) box = render(pres[k], box, grouped);
+      i = j + 1;
+    }
+  }
+
+  function slug(s) {
+    return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  }
+
+  function toc() {
+    var heads = document.querySelectorAll('h2, h3');
+    if (!heads.length) return;
+    var nav = el('nav', 'toc'), list = el('ul'), items = [];
+    var h1 = document.querySelector('h1');
+    if (h1) {
+      var topA = el('a', 'toc-title', h1.textContent);
+      topA.href = '#';
+      nav.appendChild(topA);
+    }
+
+    // Per file: which distinct hunks (by data-hash) appear in which section.
+    // The count is per document; hunks of the same file in other pages
+    // (e.g. appendix.html) are not visible from here.
+    var hunksOf = {}, sectionsOf = {};
+    Array.prototype.forEach.call(document.querySelectorAll('pre.hunk'), function (pre) {
+      var file = pre.getAttribute('data-file'), key = pre.getAttribute('data-hash') || pre.getAttribute('data-symbol');
+      var sec = pre.closest('section[id]');
+      if (!file || !sec) return;
+      (hunksOf[file] = hunksOf[file] || {})[key] = true;
+      var s = sectionsOf[file] = sectionsOf[file] || {};
+      s[sec.id] = s[sec.id] || { hunks: {}, first: pre };
+      s[sec.id].hunks[key] = true;
+    });
+    var titleOf = {};
+
+    Array.prototype.forEach.call(heads, function (h) {
+      var target = h.closest('section[id]') || h;
+      if (!target.id) {
+        var id = slug(h.textContent), n = 1;
+        while (document.getElementById(id)) id = slug(h.textContent) + '-' + (++n);
+        target.id = id;
+      }
+      titleOf[target.id] = h.textContent;
+      var li = el('li', 'toc-' + h.tagName.toLowerCase()), a = el('a', null, h.textContent);
+      a.href = '#' + target.id;
+      li.appendChild(a);
+      list.appendChild(li);
+      items.push({ target: target, li: li });
+    });
+
+    items.forEach(function (it) {
+      if (!it.target.matches('section[id]')) return;
+      var files = Object.keys(sectionsOf).filter(function (f) { return sectionsOf[f][it.target.id]; }).sort();
+      if (!files.length) return;
+      var ul = el('ul', 'toc-files');
+      files.forEach(function (f) {
+        var here = Object.keys(sectionsOf[f][it.target.id].hunks).length, total = Object.keys(hunksOf[f]).length;
+        var li = el('li'), a = el('a', 'toc-file');
+        var parts = f.split('/');
+        a.appendChild(el('span', 'dir', parts.length > 1 ? parts[parts.length - 2] + '/' : ''));
+        a.appendChild(el('span', 'base', parts[parts.length - 1]));
+        a.title = f;
+        var first = sectionsOf[f][it.target.id].first;
+        a.href = '#' + first.getAttribute('data-file') + '::' + first.getAttribute('data-symbol');
+        li.appendChild(a);
+        if (here < total) {
+          li.className = 'partial';
+          var elsewhere = Object.keys(sectionsOf[f]).filter(function (s) { return s !== it.target.id; })
+            .map(function (s) { return titleOf[s] || s; });
+          var frac = el('span', 'frac', here + '/' + total);
+          frac.title = here + ' of ' + total + ' hunks in this section; rest under: ' + elsewhere.join(', ');
+          li.appendChild(frac);
+          a.title = f + ' (' + frac.title + ')';
+        }
+        ul.appendChild(li);
+      });
+      it.li.appendChild(ul);
+    });
+    nav.appendChild(list);
+    document.body.appendChild(nav);
+
+    var current = null;
+    function update() {
+      var y = window.scrollY + 40, pick = null;
+      items.forEach(function (it) { if (it.target.offsetTop <= y) pick = it; });
+      if (pick === current) return;
+      if (current) current.li.classList.remove('active');
+      current = pick;
+      if (current) current.li.classList.add('active');
+    }
+    window.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    update();
   }
 
   document.addEventListener('DOMContentLoaded', function () {
-    Array.prototype.forEach.call(document.querySelectorAll('pre.hunk'), render);
+    renderAll();
+    toc();
   });
 })();

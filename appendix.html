@@ -17,7 +17,7 @@
 <section id="definition-sites">
 <h2>Contracts live at definition sites</h2>
 <pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_GatherFromModelParallelRegion.spmd_typecheck" data-hash="44f9a73e16" data-render="added">
-@@ -267,6 +289,12 @@ def forward(ctx, input_, group):
+@@ -267,6 +289,12 @@ _GatherFromModelParallelRegion.forward
          ctx.group = group
          return _gather_along_last_dim(input_, group)
  
@@ -32,7 +32,7 @@
          """Backward function."""
 </pre>
 <pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ScatterToSequenceParallelRegion.spmd_typecheck" data-hash="a7d955f907" data-render="added">
-@@ -287,6 +315,12 @@ def forward(ctx, input_, group):
+@@ -287,6 +315,12 @@ _ScatterToSequenceParallelRegion.forward
          ctx.group = group
          return _split_along_first_dim(input_, group)
  
@@ -47,7 +47,7 @@
          """Backward function."""
 </pre>
 <pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceScatterToSequenceParallelRegion.spmd_typecheck" data-hash="1f2d251709" data-render="added">
-@@ -364,6 +405,12 @@ def forward(ctx, input_, group, input_split_sizes=None, use_global_buffer=False)
+@@ -364,6 +405,12 @@ _ReduceScatterToSequenceParallelRegion.forward
          ctx.use_global_buffer = use_global_buffer
          return _reduce_scatter_along_first_dim(input_, group, input_split_sizes, use_global_buffer)
  
@@ -62,7 +62,7 @@
          """Backward function."""
 </pre>
 <pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_AllGatherFromTensorParallelRegion.spmd_typecheck" data-hash="0279d6d690" data-render="added">
-@@ -391,6 +438,12 @@ def forward(ctx, input_, group):
+@@ -391,6 +438,12 @@ _AllGatherFromTensorParallelRegion.forward
          ctx.group = group
          return _gather_along_last_dim(input_, group)
  
@@ -77,7 +77,7 @@
          """Backward function."""
 </pre>
 <pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceScatterToTensorParallelRegion.spmd_typecheck" data-hash="8eaac0cc87" data-render="added">
-@@ -411,6 +464,12 @@ def forward(ctx, input_, group):
+@@ -411,6 +464,12 @@ _ReduceScatterToTensorParallelRegion.forward
          ctx.group = group
          return _reduce_scatter_along_last_dim(input_, group)
  
@@ -92,7 +92,7 @@
          """Backward function."""
 </pre>
 <pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_AllToAll.spmd_typecheck" data-hash="65f0b95fde" data-render="added">
-@@ -450,6 +509,12 @@ def forward(ctx, group, input, output_split_sizes, input_split_sizes):
+@@ -450,6 +509,12 @@ _AllToAll.forward
          )
          return output
  
@@ -107,7 +107,7 @@
          """Backward function."""
 </pre>
 <pre class="hunk" data-file="megatron/core/tensor_parallel/layers.py" data-symbol="LinearWithFrozenWeight.spmd_typecheck" data-hash="92c3c5ddf2" data-render="added">
-@@ -353,6 +354,25 @@ def forward(ctx, input, weight, bias, allreduce_dgrad, tp_group):
+@@ -353,6 +354,25 @@ LinearWithFrozenWeight.forward
              output = output + bias
          return output
  
@@ -139,7 +139,7 @@
 <section id="meets-reality">
 <h2>Where the type system meets reality</h2>
 <pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.finish_grad_sync" data-hash="eec13b8de0">
-@@ -544,8 +579,9 @@ def finish_grad_sync(self, force_all_reduce: Optional[bool] = False):
+@@ -544,8 +579,9 @@ DistributedDataParallel.finish_grad_sync
          calls to complete. When overlap_grad_reduce is set to False, calls synchronous
          communication ops.
          """
@@ -153,7 +153,7 @@
          """Free overlap param-gather GPU buffers across all bucket groups."""
 </pre>
 <pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="_named_non_tensor_args" data-hash="54f01c0848" data-render="added">
-@@ -666,0 +675,10 @@ def __new__(
+@@ -666,0 +675,10 @@ _named_non_tensor_args
 +
 +    def _named_non_tensor_args(unpacker, values):
 +        """Name a tuple immediately unpacked into a function's first locals."""
@@ -166,7 +166,7 @@
 +        return dict(zip(names, values))
 </pre>
 <pre class="hunk" data-file="megatron/core/fusions/fused_mla_yarn_rope_apply.py" data-symbol="ApplyMLARotaryEmbKV" data-hash="ce876e4785">
-@@ -578,6 +580,7 @@ def rotary_bwd_kv_kernel(
+@@ -578,6 +580,7 @@ rotary_bwd_kv_kernel
          tl.store(dEMB_ptr + tl.arange(0, emb_dim // 2) * 2 + 1, x_2)
  
  
@@ -176,7 +176,7 @@
      Autograd function for applying YARN RoPE to MLA's key and value.
 </pre>
 <pre class="hunk" data-file="megatron/core/utils.py" data-symbol="MakeViewlessTensor" data-hash="ce876e4785">
-@@ -696,6 +697,7 @@ def unwrap(self):
+@@ -696,6 +697,7 @@ WrappedTensor.unwrap
          return self._wrapper.pop(0)
  
  
@@ -186,7 +186,7 @@
      Autograd function to make a viewless tensor.
 </pre>
 <pre class="hunk" data-file="megatron/core/transformer/moe/moe_utils.py" data-symbol="RouterGatingLinearFunction" data-hash="ce876e4785">
-@@ -1304,6 +1314,7 @@ def apply_biased_logits(logits, std, layer_number=None):
+@@ -1304,6 +1314,7 @@ apply_biased_logits
      return RandomSTEShared.apply(logits, std, layer_number)
  
  
@@ -196,7 +196,7 @@
      Autograd function for router gating linear.
 </pre>
 <pre class="hunk" data-file="megatron/core/transformer/multi_token_prediction.py" data-symbol="MTPLossAutoScaler.spmd_typecheck" data-hash="55781a629a" data-render="added">
-@@ -582,6 +583,15 @@ def forward(ctx, output: torch.Tensor, mtp_loss: torch.Tensor):
+@@ -582,6 +583,15 @@ MTPLossAutoScaler.forward
          ctx.save_for_backward(mtp_loss)
          return output
  
@@ -218,7 +218,7 @@
 <section id="one-gpu">
 <h2>Checking a 256-GPU job on one GPU</h2>
 <pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_is_fake_process_group" data-hash="849b6f7202" data-render="added">
-@@ -350,3 +351,6 @@ def reset_hybrid_ep_buffer():
+@@ -350,3 +351,6 @@ reset_hybrid_ep_buffer
      _hybrid_ep_buffer = None
  
  
@@ -227,7 +227,7 @@
 +    return torch.distributed.get_backend(group) == "fake"
 </pre>
 <pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_fake_combine" data-hash="5f9ef99e91" data-render="added">
-@@ -353,3 +378,11 @@ def _fake_dispatch(x, routing_map, probs, num_local_experts, num_permuted_tokens
+@@ -353,3 +378,11 @@ _fake_combine
 +
 +
 +def _fake_combine(x, handle):
@@ -241,7 +241,7 @@
      Fused dispatch operation for permute + dispatch a2a + permute using the HybridEP backend
 </pre>
 <pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch.backward" data-hash="3c97fe92c3">
-@@ -446,6 +506,10 @@ def backward(ctx, grad_x, grad_probs, grad_scaling_factor, grad_tokens_per_exper
+@@ -446,6 +506,10 @@ HybridEPDispatch.backward
          Backward pass of fused dispatch of the HybridEP backend
          '''
          handle = ctx.handle
@@ -254,7 +254,7 @@
              probs=grad_probs,
 </pre>
 <pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPCombine.forward" data-hash="cd1e140791">
-@@ -481,6 +545,11 @@ def forward(ctx, x, handle, num_permuted_tokens=None, pad_multiple=None, fused=F
+@@ -481,6 +545,11 @@ HybridEPCombine.forward
          '''
          Forward pass of fused combine of the HybridEP backend
          '''
@@ -268,7 +268,7 @@
              handle=handle,
 </pre>
 <pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPCombine.backward" data-hash="3db60445f6">
-@@ -499,6 +573,9 @@ def backward(ctx, grad_x):
+@@ -499,6 +573,9 @@ HybridEPCombine.backward
          Backward pass of fused combine of the HybridEP backend
          '''
          handle = ctx.handle
@@ -280,7 +280,7 @@
              scaling_factor=None,
 </pre>
 <pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="_make_mlperf_deepseek_v3_config" data-hash="91f8e91db2" data-render="added">
-@@ -0,0 +27,114 @@
+@@ -0,0 +27,114 @@ _make_mlperf_deepseek_v3_config
 +
 +
 +def _make_mlperf_deepseek_v3_config() -&gt; MLATransformerConfig:
@@ -397,7 +397,7 @@
 +    )
 </pre>
 <pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="_build_mlperf_deepseek_v3_model" data-hash="c92b113a29" data-render="added">
-@@ -0,0 +141,29 @@ def _make_mlperf_deepseek_v3_config() -&gt; MLATransformerConfig:
+@@ -0,0 +141,29 @@ _build_mlperf_deepseek_v3_model
 +
 +
 +def _build_mlperf_deepseek_v3_model(config: MLATransformerConfig, vp_stage: int) -&gt; GPTModel:
@@ -429,7 +429,7 @@
 +    )
 </pre>
 <pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="mlperf_environment" data-hash="406c84c6d0" data-render="added">
-@@ -0,0 +170,15 @@ def _build_mlperf_deepseek_v3_model(config: MLATransformerConfig, vp_stage: int)
+@@ -0,0 +170,15 @@ mlperf_environment
 +
 +
 +@pytest.fixture
@@ -447,7 +447,7 @@
 +        monkeypatch.delenv(variable, raising=False)
 </pre>
 <pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="_wrap_in_ddp" data-hash="85ea441018" data-render="added">
-@@ -0,0 +185,19 @@ def mlperf_environment(monkeypatch):
+@@ -0,0 +185,19 @@ _wrap_in_ddp
 +
 +
 +def _wrap_in_ddp(config: MLATransformerConfig, model: GPTModel) -&gt; DistributedDataParallel:

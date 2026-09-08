@@ -206,8 +206,20 @@ PY_FUNCNAME = re.compile(r"^\s*(class|(async\s+)?def)\s")
 ANY_FUNCNAME = re.compile(r"^[A-Za-z_$]")
 
 
-def section_heading(ops: list[Op], lo: int, old: list[str], new: list[str], is_py: bool) -> str:
+def section_heading(ops: list[Op], lo: int, hi: int, old: list[str], new: list[str], is_py: bool,
+                    old_map: dict[int, str] | None = None,
+                    new_map: dict[int, str] | None = None) -> str:
+    """Context for the ``@@`` line.  Python: the qualified symbol enclosing the
+    first line of the section that has one (``Cls.method``), which names the
+    class where git's funcname would only say ``def forward``, and names the
+    def being added rather than the one above it when the section opens on a
+    blank line.  Otherwise the nearest preceding def/class (or any unindented
+    line), as git does."""
     pat = PY_FUNCNAME if is_py else ANY_FUNCNAME
+    for op in ops[lo:hi + 1]:
+        sym = (new_map or {}).get(op.new) if op.new is not None else (old_map or {}).get(op.old)
+        if sym:
+            return sym
     first = ops[lo]
     if first.new is not None:
         lines, upto = new, first.new - 1
@@ -264,6 +276,8 @@ def extract_units(repo: str, base: str, head: str) -> list[Unit]:
         ops = file_ops(repo, base, head, path, old, new)
         is_py = path.endswith(".py")
         extents: dict[str, tuple[int, int]] = {}
+        old_map: dict[int, str] = {}
+        new_map: dict[int, str] = {}
         if is_py:
             try:
                 old_map = symbol_map(old_src)[0] if old_src else {}
@@ -284,7 +298,7 @@ def extract_units(repo: str, base: str, head: str) -> list[Unit]:
             foreign = set(changes) - set(mine)
             secs = windows(ops, mine, foreign)
             text = "\n".join(
-                render_section(ops, lo, hi, section_heading(ops, lo, old, new, path.endswith(".py")))
+                render_section(ops, lo, hi, section_heading(ops, lo, hi, old, new, path.endswith(".py"), old_map, new_map))
                 for lo, hi in secs
             )
             changed = [ops[i].tag + ops[i].text for i in mine]

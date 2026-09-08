@@ -66,6 +66,28 @@ TODO: switch DSv3 to global spmd types
 
 <section id="what-type-checks-means">
 <h2>Annotating custom autograd functions</h2>
+<!-- TODO: Purely local kernels never communicate; register_local_autograd_function gives them the generic local rule instead of a hand-written contract. -->
+<h3>Local functions</h3>
+<pre class="hunk" data-file="megatron/core/fusions/fused_bias_swiglu.py" data-symbol="SwiGLUFunction" data-hash="ce876e4785">
+@@ -144,6 +145,7 @@ BiasSwiGLUFunction.backward
+         return tmp, tmp, None, None
+ 
+ 
++@spmd.register_local_autograd_function
+ class SwiGLUFunction(torch.autograd.Function):
+     """Custom autograd function for SwiGLU activation without bias."""
+ 
+</pre>
+<pre class="hunk" data-file="megatron/core/fusions/fused_mla_yarn_rope_apply.py" data-symbol="ApplyMLARotaryEmbQ" data-hash="ce876e4785">
+@@ -207,6 +208,7 @@ rotary_bwd_q_kernel
+     tl.store(DO + x_2_off, x_2, mask=mask)
+ 
+ 
++@spmd.register_local_autograd_function
+ class ApplyMLARotaryEmbQ(torch.autograd.Function):
+     """
+     Autograd function for applying YARN RoPE to MLA's query.
+</pre>
 <h3>Declaring a contract with spmd_typecheck</h3>
 <!-- TODO: Introduce R, V, I, S(d) through the five-line contract on _ReduceFromModelParallelRegion: V in, I out, R when the output carries no gradient. A process group names a mesh axis. -->
 <pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceFromModelParallelRegion.spmd_typecheck" data-hash="f5a40f79fb" data-render="added">
@@ -654,28 +676,6 @@ TODO: switch DSv3 to global spmd types
      @staticmethod
      def backward(ctx, grad_output: torch.Tensor) -&gt; Tuple[torch.Tensor, torch.Tensor]:
          """Compute and scale the gradient for auxiliary loss..
-</pre>
-<!-- TODO: Purely local kernels never communicate; register_local_autograd_function gives them the generic local rule instead of a hand-written contract. -->
-<h3>Local functions</h3>
-<pre class="hunk" data-file="megatron/core/fusions/fused_bias_swiglu.py" data-symbol="SwiGLUFunction" data-hash="ce876e4785">
-@@ -144,6 +145,7 @@ BiasSwiGLUFunction.backward
-         return tmp, tmp, None, None
- 
- 
-+@spmd.register_local_autograd_function
- class SwiGLUFunction(torch.autograd.Function):
-     """Custom autograd function for SwiGLU activation without bias."""
- 
-</pre>
-<pre class="hunk" data-file="megatron/core/fusions/fused_mla_yarn_rope_apply.py" data-symbol="ApplyMLARotaryEmbQ" data-hash="ce876e4785">
-@@ -207,6 +208,7 @@ rotary_bwd_q_kernel
-     tl.store(DO + x_2_off, x_2, mask=mask)
- 
- 
-+@spmd.register_local_autograd_function
- class ApplyMLARotaryEmbQ(torch.autograd.Function):
-     """
-     Autograd function for applying YARN RoPE to MLA's query.
 </pre>
 </section>
 

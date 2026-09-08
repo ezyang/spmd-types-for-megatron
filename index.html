@@ -60,10 +60,8 @@ and memory analysis. (Megatron already supports this, so it is omitted in this p
 <li>Write a unit test (with fake PG) which runs your model code with typechecking enabled.</li>
 </ol>
 
-<p>One convention up front: every file that touches the library imports it as
-<code>spmd</code>, so the annotations below read <code>spmd.assert_type(...)</code>,
-<code>spmd.R</code>, <code>spmd.I</code>, and so on.  This is the same import you will
-see at the top of each touched file, for example:</p>
+<p>A note about a convention: we assume all files <code>import spmd_types as spmd</code> (you
+can see the full necessary import changes in Appendix):</p>
 
 <pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="&lt;module&gt;" data-hash="9bdf686034">
 @@ -1,5 +1,6 @@

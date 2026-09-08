@@ -160,6 +160,27 @@ TODO: switch DSv3 to global spmd types
      @custom_bwd
      def backward(ctx, grad_output):
 </pre>
+<!-- TODO: Purely local kernels never communicate; register_local_autograd_function gives them the generic local rule instead of a hand-written contract. -->
+<pre class="hunk" data-file="megatron/core/fusions/fused_bias_swiglu.py" data-symbol="SwiGLUFunction" data-hash="ce876e4785">
+@@ -144,6 +145,7 @@ BiasSwiGLUFunction.backward
+         return tmp, tmp, None, None
+ 
+ 
++@spmd.register_local_autograd_function
+ class SwiGLUFunction(torch.autograd.Function):
+     """Custom autograd function for SwiGLU activation without bias."""
+ 
+</pre>
+<pre class="hunk" data-file="megatron/core/fusions/fused_mla_yarn_rope_apply.py" data-symbol="ApplyMLARotaryEmbQ" data-hash="ce876e4785">
+@@ -207,6 +208,7 @@ rotary_bwd_q_kernel
+     tl.store(DO + x_2_off, x_2, mask=mask)
+ 
+ 
++@spmd.register_local_autograd_function
+ class ApplyMLARotaryEmbQ(torch.autograd.Function):
+     """
+     Autograd function for applying YARN RoPE to MLA's query.
+</pre>
 </section>
 
 <section id="who-declares-what">
@@ -563,7 +584,7 @@ TODO: switch DSv3 to global spmd types
 
 <section id="meets-reality">
 <h2>Where the type system meets reality</h2>
-<!-- TODO: The escape hatches and the glue, in order: vocab bounds as typed scalars; no_typecheck around bookkeeping (DDP gradient hooks, fused-op construction, the CPU RNG comparison); force_eager so torch.compile does not hide ops; contracts bolted onto Transformer Engine by name; local registrations for kernels that never communicate; two identity-on-output contracts where the generic local rule would be wrong. -->
+<!-- TODO: The escape hatches and the glue, in order: vocab bounds as typed scalars; no_typecheck around bookkeeping (DDP gradient hooks, fused-op construction, the CPU RNG comparison); force_eager so torch.compile does not hide ops; contracts bolted onto Transformer Engine by name; two identity-on-output contracts where the generic local rule would be wrong. -->
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_vocab_bounds" data-hash="0271fe7d6e" data-render="added">
 @@ -0,0 +169,13 @@ _annotate_vocab_bounds
 +
@@ -837,26 +858,6 @@ TODO: switch DSv3 to global spmd types
  else:
      fused_topk_with_score_function = None
      fused_compute_score_for_moe_aux_loss = None
-</pre>
-<pre class="hunk" data-file="megatron/core/fusions/fused_bias_swiglu.py" data-symbol="SwiGLUFunction" data-hash="ce876e4785">
-@@ -144,6 +145,7 @@ BiasSwiGLUFunction.backward
-         return tmp, tmp, None, None
- 
- 
-+@spmd.register_local_autograd_function
- class SwiGLUFunction(torch.autograd.Function):
-     """Custom autograd function for SwiGLU activation without bias."""
- 
-</pre>
-<pre class="hunk" data-file="megatron/core/fusions/fused_mla_yarn_rope_apply.py" data-symbol="ApplyMLARotaryEmbQ" data-hash="ce876e4785">
-@@ -207,6 +208,7 @@ rotary_bwd_q_kernel
-     tl.store(DO + x_2_off, x_2, mask=mask)
- 
- 
-+@spmd.register_local_autograd_function
- class ApplyMLARotaryEmbQ(torch.autograd.Function):
-     """
-     Autograd function for applying YARN RoPE to MLA's query.
 </pre>
 <pre class="hunk" data-file="megatron/core/transformer/moe/moe_utils.py" data-symbol="MoEAuxLossAutoScaler.spmd_typecheck" data-hash="3ac77dd373" data-render="added">
 @@ -264,6 +265,15 @@ MoEAuxLossAutoScaler.forward

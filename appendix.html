@@ -15,7 +15,7 @@
 <h1>Appendix: the remaining hunks</h1>
 <!-- Hunks that repeat a pattern already shown in index.html. Same section headings; link to one with appendix.html#file::symbol -->
 <section id="definition-sites">
-<h2>Contracts live at definition sites</h2>
+<h2>Annotating custom autograd functions</h2>
 <pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_GatherFromModelParallelRegion.spmd_typecheck" data-hash="44f9a73e16" data-render="added">
 @@ -267,6 +289,12 @@ _GatherFromModelParallelRegion.forward
          ctx.group = group
@@ -134,6 +134,36 @@
      @custom_bwd
      def backward(ctx, grad_output):
 </pre>
+<pre class="hunk" data-file="megatron/core/fusions/fused_mla_yarn_rope_apply.py" data-symbol="ApplyMLARotaryEmbKV" data-hash="ce876e4785">
+@@ -578,6 +580,7 @@ rotary_bwd_kv_kernel
+         tl.store(dEMB_ptr + tl.arange(0, emb_dim // 2) * 2 + 1, x_2)
+ 
+ 
++@spmd.register_local_autograd_function
+ class ApplyMLARotaryEmbKV(torch.autograd.Function):
+     """
+     Autograd function for applying YARN RoPE to MLA's key and value.
+</pre>
+<pre class="hunk" data-file="megatron/core/utils.py" data-symbol="MakeViewlessTensor" data-hash="ce876e4785">
+@@ -696,6 +697,7 @@ WrappedTensor.unwrap
+         return self._wrapper.pop(0)
+ 
+ 
++@spmd.register_local_autograd_function
+ class MakeViewlessTensor(torch.autograd.Function):
+     """
+     Autograd function to make a viewless tensor.
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/moe_utils.py" data-symbol="RouterGatingLinearFunction" data-hash="ce876e4785">
+@@ -1304,6 +1314,7 @@ apply_biased_logits
+     return RandomSTEShared.apply(logits, std, layer_number)
+ 
+ 
++@spmd.register_local_autograd_function
+ class RouterGatingLinearFunction(torch.autograd.Function):
+     """
+     Autograd function for router gating linear.
+</pre>
 </section>
 
 <section id="meets-reality">
@@ -164,36 +194,6 @@
 +                f"Could not identify all non-tensor arguments for {unpacker.__qualname__}"
 +            )
 +        return dict(zip(names, values))
-</pre>
-<pre class="hunk" data-file="megatron/core/fusions/fused_mla_yarn_rope_apply.py" data-symbol="ApplyMLARotaryEmbKV" data-hash="ce876e4785">
-@@ -578,6 +580,7 @@ rotary_bwd_kv_kernel
-         tl.store(dEMB_ptr + tl.arange(0, emb_dim // 2) * 2 + 1, x_2)
- 
- 
-+@spmd.register_local_autograd_function
- class ApplyMLARotaryEmbKV(torch.autograd.Function):
-     """
-     Autograd function for applying YARN RoPE to MLA's key and value.
-</pre>
-<pre class="hunk" data-file="megatron/core/utils.py" data-symbol="MakeViewlessTensor" data-hash="ce876e4785">
-@@ -696,6 +697,7 @@ WrappedTensor.unwrap
-         return self._wrapper.pop(0)
- 
- 
-+@spmd.register_local_autograd_function
- class MakeViewlessTensor(torch.autograd.Function):
-     """
-     Autograd function to make a viewless tensor.
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/moe_utils.py" data-symbol="RouterGatingLinearFunction" data-hash="ce876e4785">
-@@ -1304,6 +1314,7 @@ apply_biased_logits
-     return RandomSTEShared.apply(logits, std, layer_number)
- 
- 
-+@spmd.register_local_autograd_function
- class RouterGatingLinearFunction(torch.autograd.Function):
-     """
-     Autograd function for router gating linear.
 </pre>
 <pre class="hunk" data-file="megatron/core/transformer/multi_token_prediction.py" data-symbol="MTPLossAutoScaler.spmd_typecheck" data-hash="55781a629a" data-render="added">
 @@ -582,6 +583,15 @@ MTPLossAutoScaler.forward

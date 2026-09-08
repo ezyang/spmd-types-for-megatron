@@ -14,7 +14,10 @@ import argparse, glob, http.server, os, socket, subprocess, sys, tempfile, threa
 
 def chrome_path() -> str:
     if os.environ.get("CHROME"):
-        return os.environ["CHROME"]
+        path = os.environ["CHROME"]
+        if not os.path.isfile(path) or not os.access(path, os.X_OK):
+            sys.exit(f"shot: CHROME is not an executable file: {path}")
+        return path
     cache = os.path.expanduser("~/Library/Caches/ms-playwright") if sys.platform == "darwin" else os.path.expanduser("~/.cache/ms-playwright")
     shells = sorted(glob.glob(os.path.join(cache, "chromium_headless_shell-*", "*", "chrome-headless-shell")))
     if shells:
@@ -23,7 +26,10 @@ def chrome_path() -> str:
         if os.path.exists(p):
             print("shot: chrome-headless-shell not found; using", p, file=sys.stderr)
             return p
-    sys.exit("shot: no Chrome found; set CHROME=<path>")
+    sys.exit(
+        "shot: no Chrome found; run "
+        "`npx playwright install chromium --only-shell` or set CHROME=<path>"
+    )
 
 
 def serve() -> tuple[http.server.ThreadingHTTPServer, int]:
@@ -33,6 +39,18 @@ def serve() -> tuple[http.server.ThreadingHTTPServer, int]:
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Quiet)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, srv.server_address[1]
+
+
+def run_chrome(args: list[str]) -> str:
+    """Run Chrome quietly on success, but retain diagnostics on failure."""
+    result = subprocess.run(args, capture_output=True, text=True)
+    if result.returncode:
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+            if not result.stderr.endswith("\n"):
+                sys.stderr.write("\n")
+        raise SystemExit(f"shot: Chrome exited with status {result.returncode}")
+    return result.stdout
 
 
 def main() -> int:
@@ -64,10 +82,10 @@ def main() -> int:
             f"--window-size={a.width},{a.height}", "--virtual-time-budget=3000"]
     try:
         if a.png:
-            subprocess.run(args + [f"--screenshot={a.png}", url], check=True, stderr=subprocess.DEVNULL)
+            run_chrome(args + [f"--screenshot={a.png}", url])
             print(a.png, file=sys.stderr)
         if a.dom:
-            out = subprocess.run(args + ["--dump-dom", url], check=True, capture_output=True, text=True).stdout
+            out = run_chrome(args + ["--dump-dom", url])
             sys.stdout.write(out)
     finally:
         srv.shutdown()

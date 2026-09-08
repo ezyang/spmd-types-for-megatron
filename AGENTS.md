@@ -23,5 +23,10 @@ Human edits to tracked `*.html` files are intentional project work and must not 
 ## Commit safety
 
 - Run the most relevant available checks before committing. For narrated-tour content, follow the validation commands in `README.md` when the required Megatron checkout is available.
+- For changes to `*.html`, `tour.js`, or `tour.css`, run the repository's
+  `shot.py` headless-browser check exactly as documented in `README.md`. Headless
+  Chrome runs without a GUI or display server in agent environments. Do not
+  replace it with a DOM shim; if it fails, report the command's actual error and
+  follow the browser-install instructions in `README.md`.
 - Never include secrets, credentials, editor artifacts, or unrelated non-HTML changes in a commit.
 - At handoff, report each commit created and any changes intentionally left uncommitted.

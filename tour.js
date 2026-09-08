@@ -53,6 +53,7 @@
     var file = pre.getAttribute('data-file') || '', symbol = pre.getAttribute('data-symbol') || '';
     var only = lineSet(pre.getAttribute('data-lines'));
     var collapse = pre.hasAttribute('data-collapse');
+    var fold = pre.hasAttribute('data-fold');
     var rows = parse(pre.textContent);
 
     // Deleted rows sit at the position of the next new-side line.
@@ -71,6 +72,18 @@
       r.idx = idx;
       kept.push(r);
     });
+
+    // data-fold: context more than FOLD lines from any change starts hidden,
+    // behind a row that expands it.  Mark the far rows now; runs are built
+    // while emitting.
+    if (fold) {
+      var changed = [];
+      kept.forEach(function (r, k) { if (!r.sep && r.tag !== ' ') changed.push(k); });
+      kept.forEach(function (r, k) {
+        if (r.sep || r.tag !== ' ') return;
+        r.far = changed.every(function (c) { return Math.abs(c - k) > FOLD; });
+      });
+    }
 
     // A run of adjacent same-file hunks shares one box and one file header;
     // each hunk then gets its own symbol row.  A lone hunk keeps the symbol
@@ -94,7 +107,7 @@
     var table = el('table'), tbody = el('tbody');
     // Within a box, a hunk that picks up exactly where the previous one ended
     // (per-symbol units of a brand-new file) is contiguous: no header row.
-    var prev = box.tourLast || null, pendingSep = null;
+    var prev = box.tourLast || null, pendingSep = null, foldRun = null, foldRows = [];
     kept.forEach(function (r) {
       if (r.sep) { pendingSep = r; return; }
       var gap = prev && !((r.old != null && prev.old != null && r.old === prev.old + 1) || (r.new != null && prev.new != null && r.new === prev.new + 1) || (r.at != null && r.at === prev.at) || (prev.tag === '-' && r.new === prev.at));
@@ -112,6 +125,29 @@
       pendingSep = null;
       var tr = el('tr');
       tr.className = r.tag === '+' ? 'add' : r.tag === '-' ? 'del' : 'ctx';
+      if (r.far) {
+        if (!foldRun) {
+          foldRun = [];
+          var foldTr = el('tr', 'fold'), foldTd = el('td', 'code');
+          foldTd.colSpan = (mode === 'diff' ? 2 : 1) + (mode === 'added' ? 1 : 2);
+          foldTr.appendChild(foldTd);
+          tbody.appendChild(foldTr);
+          (function (run, ftr, ftd) {
+            ftr.addEventListener('click', function () {
+              var open = ftr.classList.toggle('open');
+              run.forEach(function (t) { t.style.display = open ? '' : 'none'; });
+              ftd.textContent = (open ? '\u25be collapse ' : '\u25b8 expand ') + run.length + ' lines';
+            });
+            ftr.tourLabel = function () { ftd.textContent = '\u25b8 expand ' + run.length + ' lines'; };
+          })(foldRun, foldTr, foldTd);
+          foldTr.tourRun = foldRun;
+          foldRows.push(foldTr);
+        }
+        tr.style.display = 'none';
+        foldRun.push(tr);
+      } else {
+        foldRun = null;
+      }
       if (mode === 'diff') tr.appendChild(el('td', 'ln old', r.old != null ? String(r.old) : ''));
       var tdNew = el('td', 'ln new');
       if (r.new != null) {
@@ -128,6 +164,7 @@
       tbody.appendChild(tr);
       prev = r;
     });
+    foldRows.forEach(function (f) { f.tourLabel(); });
     if (prev && !prev.fromBox) box.tourLast = { old: prev.old, new: prev.new, at: prev.at, tag: prev.tag, fromBox: true };
     table.appendChild(tbody);
     hunk.appendChild(table);
@@ -139,6 +176,7 @@
   // exact-token occurrence of NAME elsewhere links to it.  Deliberately dumb:
   // no scoping, no resolution; a name added more than once on the page is
   // ambiguous and left alone.
+  var FOLD = 3;
   var DEF_RE = /^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)/;
   var IDENT_RE = /[A-Za-z_]\w*/g;
   var defs = {};

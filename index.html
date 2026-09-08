@@ -373,7 +373,7 @@ rule from that.
              assert ctx.output_split_sizes is None
              return (_split_along_first_dim(grad_output, ctx.group), None, None, None, None)
 </pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/layers.py" data-symbol="LinearWithGradAccumulationAndAsyncCommunication.spmd_typecheck" data-hash="6fbac5a048" data-render="added" data-context="class">
+<pre class="hunk" data-file="megatron/core/tensor_parallel/layers.py" data-symbol="LinearWithGradAccumulationAndAsyncCommunication.spmd_typecheck" data-hash="6fbac5a048" data-render="added" data-context="class" data-fold>
 @@ -441,200 +461,219 @@ LinearWithGradAccumulationAndAsyncCommunication
  class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
      """See linear_with_grad_accumulation_and_async_allreduce"""

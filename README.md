@@ -20,6 +20,8 @@ text by hand; move the whole `<pre>` instead, and shape it with attributes:
     data-render="diff"|"added"|"new"   gutter diff (default) / new side, no gutter, adds still green / new side only
     data-lines="5-20,30"               show only these new-side lines
     data-collapse                      hide context lines
+    data-fold                          start with context more than 3 lines from any
+                                       change hidden behind an "expand" row
     data-context="class"|"file"|SYMBOL widen to the enclosing class / whole file / a
                                        qualified symbol; every change inside that
                                        span is shown as a diff

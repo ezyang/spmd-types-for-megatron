@@ -106,6 +106,12 @@ local SPMD propagation rule in this case.</p>
      """
      Autograd function for applying YARN RoPE to MLA's query.
 </pre>
+
+<p>Megatron sometimes takes in autograd functions from an external package
+like Transformer Engine; you can just directly call
+<code>spmd.register_local_autograd_function</code> as not a decorator in this
+case.</p>
+
 <pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="&lt;module&gt;" data-hash="a43863d06d" data-lines="10-16,397-405,1421-1432,3150-3167">
 @@ -10,6 +10,7 @@
  from contextlib import nullcontext
@@ -208,7 +214,18 @@ local SPMD propagation rule in this case.</p>
      fused_compute_score_for_moe_aux_loss = None
 </pre>
 <h3>Declaring a contract with spmd_typecheck</h3>
-<!-- TODO: Introduce R, V, I, S(d) through the five-line contract on _ReduceFromModelParallelRegion: V in, I out, R when the output carries no gradient. A process group names a mesh axis. -->
+
+<p>Custom collectives need some special handling, since they interact with
+types in a non-trivial way.  Fortunately, there are not that many interesting
+collectives, and we provide some helper functions for the semantics of common
+collectives which you can use to conveniently write your rules.</p>
+
+TODO: switch this to <code>rules</code> API
+
+TODO: I wonder if it would be easier / less error prone to just have a variant of
+rules where you just say what the fwd/bwd impl is and we can infer the typing
+rule from that.
+
 <pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceFromModelParallelRegion.spmd_typecheck" data-hash="f5a40f79fb" data-render="added">
 @@ -227,6 +234,15 @@ _ReduceFromModelParallelRegion.forward
          """Forward function."""

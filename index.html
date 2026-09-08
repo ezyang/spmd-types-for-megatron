@@ -60,14 +60,32 @@ and memory analysis. (Megatron already supports this, so it is omitted in this p
 <li>Write a unit test (with fake PG) which runs your model code with typechecking enabled.</li>
 </ol>
 
+<p>This patch specifically addresses the subset of changes needed to run DeepSeek-V3
+in the recommended configuration as published by Megatron-Bridge.</p>
+
 TODO: link to docs when its ready
 
 TODO: switch DSv3 to global spmd types
 
 <section id="what-type-checks-means">
 <h2>Annotating custom autograd functions</h2>
-<!-- TODO: Purely local kernels never communicate; register_local_autograd_function gives them the generic local rule instead of a hand-written contract. -->
+
+<p>Every custom autograd function in your codebase needs some annotation
+indicating how <code>spmd_types</code> can typecheck it.  These annotations
+constitute "trusted code" (<code>spmd_types</code> typechecking will not
+directly tell you if you've done it correctly, although you can use
+<code>spmd.rulecheck</code> to numerically test that an annotation is correct.
+However, the correctness of an annotation can be evaluated by only looking
+at the custom autograd function; the <code>spmd_types</code> typechecker then ensures
+that how you've put these functions together in a global codebase is coherent.</p>
+
 <h3>Local functions</h3>
+
+<p>If you are doing only local SPMD typechecking, it is very simple to add
+support for custom autograd functions that don't do any communications; we
+only need to know that the operation is local and we can use the standard
+local SPMD propagation rule in this case.</p>
+
 <pre class="hunk" data-file="megatron/core/fusions/fused_bias_swiglu.py" data-symbol="SwiGLUFunction" data-hash="ce876e4785">
 @@ -144,6 +145,7 @@ BiasSwiGLUFunction.backward
          return tmp, tmp, None, None
@@ -88,103 +106,7 @@ TODO: switch DSv3 to global spmd types
      """
      Autograd function for applying YARN RoPE to MLA's query.
 </pre>
-<h3>Declaring a contract with spmd_typecheck</h3>
-<!-- TODO: Introduce R, V, I, S(d) through the five-line contract on _ReduceFromModelParallelRegion: V in, I out, R when the output carries no gradient. A process group names a mesh axis. -->
-<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceFromModelParallelRegion.spmd_typecheck" data-hash="f5a40f79fb" data-render="added">
-@@ -227,6 +234,15 @@ _ReduceFromModelParallelRegion.forward
-         """Forward function."""
-         return _reduce(input_, group)
- 
-+    @staticmethod
-+    def spmd_typecheck(output, *, input_, group):
-+        """Type the all-reduce forward and identity backward."""
-+        spmd.assert_type(input_, {group: spmd.V})
-+        # I adds a gradient promise on top of R. A result with no gradient, such
-+        # as the router's token counts, is typed R so it can mix freely with V.
-+        output_type = spmd.I if output.requires_grad else spmd.R
-+        spmd.assert_local_type_like(output, input_, {group: output_type})
-+
-     @staticmethod
-     def backward(ctx, grad_output):
-         """Backward function."""
-</pre>
-<!-- TODO: Each native collective states its contract beside its forward/backward, in adjoint pairs: copy/reduce, scatter/gather on the last dim, scatter/gather on the sequence dim, the reduce-scatters, all-to-all. Then the linears, whose input type depends on allreduce_dgrad and sequence_parallel. -->
-<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_CopyToModelParallelRegion.spmd_typecheck" data-hash="fa4ffa6d7c" data-render="added">
-@@ -208,6 +209,12 @@ _CopyToModelParallelRegion.forward
-         ctx.group = group
-         return input_
- 
-+    @staticmethod
-+    def spmd_typecheck(output, *, input_, group):
-+        """Type the identity forward and all-reduce backward."""
-+        spmd.assert_type(input_, {group: spmd.I})
-+        spmd.assert_local_type_like(output, input_, {group: spmd.R})
-+
-     @staticmethod
-     def backward(ctx, grad_output):
-         """Backward function."""
-</pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ScatterToModelParallelRegion.spmd_typecheck" data-hash="09dcdadcbd" data-render="added">
-@@ -247,6 +263,12 @@ _ScatterToModelParallelRegion.forward
-         ctx.group = group
-         return _split_along_last_dim(input_, group)
- 
-+    @staticmethod
-+    def spmd_typecheck(output, *, input_, group):
-+        """Type the last-dimension split and gather backward."""
-+        spmd.assert_type(input_, {group: spmd.I})
-+        spmd.assert_local_type_like(output, input_, {group: spmd.S(-1)})
-+
-     @staticmethod
-     def backward(ctx, grad_output):
-         """Backward function."""
-</pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_GatherFromSequenceParallelRegion.spmd_typecheck" data-hash="fcc3adb79e" data-render="added">
-@@ -324,6 +358,13 @@ _GatherFromSequenceParallelRegion.forward
-         ctx.use_global_buffer = use_global_buffer
-         return _gather_along_first_dim(input_, group, output_split_sizes, use_global_buffer)
- 
-+    @staticmethod
-+    def spmd_typecheck(output, *, input_, group, tensor_parallel_output_grad):
-+        """Type the sequence gather and its selectable gradient collective."""
-+        spmd.assert_type(input_, {group: spmd.S(0)})
-+        output_type = spmd.R if tensor_parallel_output_grad else spmd.I
-+        spmd.assert_local_type_like(output, input_, {group: output_type})
-+
-     @staticmethod
-     def backward(ctx, grad_output):
-         """Backward function."""
-</pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/layers.py" data-symbol="LinearWithGradAccumulationAndAsyncCommunication.spmd_typecheck" data-hash="6fbac5a048" data-render="added">
-@@ -488,6 +508,25 @@ LinearWithGradAccumulationAndAsyncCommunication.forward
-             output = output + bias
-         return output
- 
-+    @staticmethod
-+    def spmd_typecheck(
-+        output, *, input, weight, bias, allreduce_dgrad, sequence_parallel, tp_group
-+    ):
-+        """Check the tensor-parallel contract of the completed trainable linear."""
-+        tp_axis = spmd.normalize_axis(tp_group)
-+        spmd.assert_type(weight, {tp_axis: spmd.V})
-+        if bias is not None:
-+            spmd.assert_type(bias, {tp_axis: spmd.V})
-+        if allreduce_dgrad:
-+            input_type = spmd.I
-+        elif sequence_parallel:
-+            input_type = spmd.S(0)
-+        else:
-+            input_type = spmd.V
-+        spmd.assert_type(input, {tp_axis: input_type})
-+
-+        spmd.assert_local_type_like(output, input, {tp_axis: spmd.V})
-+
-     @staticmethod
-     @custom_bwd
-     def backward(ctx, grad_output):
-</pre>
-<!-- TODO: Transformer Engine's linear functions get the same contracts bolted on by name; the two loss auto-scalers are identity-on-output contracts where the generic local rule would be wrong. -->
-<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="&lt;module&gt;" data-hash="a43863d06d" data-lines="10-16,397-405,668-674">
+<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="&lt;module&gt;" data-hash="a43863d06d" data-lines="10-16,397-405,1421-1432,3150-3167">
 @@ -10,6 +10,7 @@
  from contextlib import nullcontext
  from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, cast
@@ -285,6 +207,102 @@ TODO: switch DSv3 to global spmd types
      fused_topk_with_score_function = None
      fused_compute_score_for_moe_aux_loss = None
 </pre>
+<h3>Declaring a contract with spmd_typecheck</h3>
+<!-- TODO: Introduce R, V, I, S(d) through the five-line contract on _ReduceFromModelParallelRegion: V in, I out, R when the output carries no gradient. A process group names a mesh axis. -->
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceFromModelParallelRegion.spmd_typecheck" data-hash="f5a40f79fb" data-render="added">
+@@ -227,6 +234,15 @@ _ReduceFromModelParallelRegion.forward
+         """Forward function."""
+         return _reduce(input_, group)
+ 
++    @staticmethod
++    def spmd_typecheck(output, *, input_, group):
++        """Type the all-reduce forward and identity backward."""
++        spmd.assert_type(input_, {group: spmd.V})
++        # I adds a gradient promise on top of R. A result with no gradient, such
++        # as the router's token counts, is typed R so it can mix freely with V.
++        output_type = spmd.I if output.requires_grad else spmd.R
++        spmd.assert_local_type_like(output, input_, {group: output_type})
++
+     @staticmethod
+     def backward(ctx, grad_output):
+         """Backward function."""
+</pre>
+<!-- TODO: Each native collective states its contract beside its forward/backward, in adjoint pairs: copy/reduce, scatter/gather on the last dim, scatter/gather on the sequence dim, the reduce-scatters, all-to-all. Then the linears, whose input type depends on allreduce_dgrad and sequence_parallel. -->
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_CopyToModelParallelRegion.spmd_typecheck" data-hash="fa4ffa6d7c" data-render="added">
+@@ -208,6 +209,12 @@ _CopyToModelParallelRegion.forward
+         ctx.group = group
+         return input_
+ 
++    @staticmethod
++    def spmd_typecheck(output, *, input_, group):
++        """Type the identity forward and all-reduce backward."""
++        spmd.assert_type(input_, {group: spmd.I})
++        spmd.assert_local_type_like(output, input_, {group: spmd.R})
++
+     @staticmethod
+     def backward(ctx, grad_output):
+         """Backward function."""
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ScatterToModelParallelRegion.spmd_typecheck" data-hash="09dcdadcbd" data-render="added">
+@@ -247,6 +263,12 @@ _ScatterToModelParallelRegion.forward
+         ctx.group = group
+         return _split_along_last_dim(input_, group)
+ 
++    @staticmethod
++    def spmd_typecheck(output, *, input_, group):
++        """Type the last-dimension split and gather backward."""
++        spmd.assert_type(input_, {group: spmd.I})
++        spmd.assert_local_type_like(output, input_, {group: spmd.S(-1)})
++
+     @staticmethod
+     def backward(ctx, grad_output):
+         """Backward function."""
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_GatherFromSequenceParallelRegion.spmd_typecheck" data-hash="fcc3adb79e" data-render="added">
+@@ -324,6 +358,13 @@ _GatherFromSequenceParallelRegion.forward
+         ctx.use_global_buffer = use_global_buffer
+         return _gather_along_first_dim(input_, group, output_split_sizes, use_global_buffer)
+ 
++    @staticmethod
++    def spmd_typecheck(output, *, input_, group, tensor_parallel_output_grad):
++        """Type the sequence gather and its selectable gradient collective."""
++        spmd.assert_type(input_, {group: spmd.S(0)})
++        output_type = spmd.R if tensor_parallel_output_grad else spmd.I
++        spmd.assert_local_type_like(output, input_, {group: output_type})
++
+     @staticmethod
+     def backward(ctx, grad_output):
+         """Backward function."""
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/layers.py" data-symbol="LinearWithGradAccumulationAndAsyncCommunication.spmd_typecheck" data-hash="6fbac5a048" data-render="added">
+@@ -488,6 +508,25 @@ LinearWithGradAccumulationAndAsyncCommunication.forward
+             output = output + bias
+         return output
+ 
++    @staticmethod
++    def spmd_typecheck(
++        output, *, input, weight, bias, allreduce_dgrad, sequence_parallel, tp_group
++    ):
++        """Check the tensor-parallel contract of the completed trainable linear."""
++        tp_axis = spmd.normalize_axis(tp_group)
++        spmd.assert_type(weight, {tp_axis: spmd.V})
++        if bias is not None:
++            spmd.assert_type(bias, {tp_axis: spmd.V})
++        if allreduce_dgrad:
++            input_type = spmd.I
++        elif sequence_parallel:
++            input_type = spmd.S(0)
++        else:
++            input_type = spmd.V
++        spmd.assert_type(input, {tp_axis: input_type})
++
++        spmd.assert_local_type_like(output, input, {tp_axis: spmd.V})
++
+     @staticmethod
+     @custom_bwd
+     def backward(ctx, grad_output):
+</pre>
+<!-- TODO: Transformer Engine's linear functions get the same contracts bolted on by name; the two loss auto-scalers are identity-on-output contracts where the generic local rule would be wrong. -->
 <pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="_assert_te_linear_types" data-hash="c2957a4f4f" data-render="added">
 @@ -666,0 +685,26 @@ _assert_te_linear_types
 +
@@ -440,7 +458,7 @@ TODO: switch DSv3 to global spmd types
 +        if weight_workspace is not None:
 +            spmd.assert_local_type_like(weight_workspace, weight)
 </pre>
-<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="&lt;module&gt;" data-hash="a43863d06d" data-lines="979-985,1421-1432,3058-3067">
+<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="&lt;module&gt;" data-hash="a43863d06d" data-lines="979-985,3058-3067">
 @@ -10,6 +10,7 @@
  from contextlib import nullcontext
  from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, cast
@@ -558,7 +576,7 @@ TODO: switch DSv3 to global spmd types
 +        spmd.assert_type(target, {dist_process_group: spmd.I})
 +        spmd.assert_local_type_like(output, target)
 </pre>
-<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="&lt;module&gt;" data-hash="a43863d06d" data-lines="3095-3100,3150-3167">
+<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="&lt;module&gt;" data-hash="a43863d06d" data-lines="3095-3100">
 @@ -10,6 +10,7 @@
  from contextlib import nullcontext
  from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, cast

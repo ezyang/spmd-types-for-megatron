@@ -20,6 +20,14 @@ text by hand; move the whole `<pre>` instead, and shape it with attributes:
     data-render="diff"|"added"|"new"   gutter diff (default) / new side, no gutter, adds still green / new side only
     data-lines="5-20,30"               show only these new-side lines
     data-collapse                      hide context lines
+    data-context="class"|"file"|SYMBOL widen to the enclosing class / whole file / a
+                                       qualified symbol; every change inside that
+                                       span is shown as a diff
+
+`data-context` is how a hunk carries more of the file than its own change, for
+example the whole custom autograd function around a new `spmd_typecheck`.
+`sync` recomputes the widened text from the repo each time, so the extra
+context follows the diff as it changes; only the attribute lives in the HTML.
 
 A unit is one `(file, symbol)`, where symbol is the innermost enclosing
 `def`/`class` (`<module>` for imports and other top-level statements,

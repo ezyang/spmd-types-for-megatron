@@ -9,6 +9,11 @@ rewrites in index.html / scratch.html are:
   * inserted ``<!-- SYNC:... -->`` marker comments,
   * an appended ``<section id="unplaced">``.
 
+A ``data-context`` attribute on a hunk widens what ``sync`` writes into it: the
+whole enclosing class, the whole file, or a named symbol, with the unit's
+changes shown as a diff inside that span.  The attribute is prose, so it
+survives every sync.
+
 Python 3.11+, standard library only.
 """
 
@@ -78,6 +83,22 @@ class Op:
 
 
 @dataclass
+class FileDiff:
+    """Everything ``extract_units`` learned about one file, kept so a unit can
+    later be re-rendered with more context than its default windows."""
+    path: str
+    ops: list[Op]
+    old: list[str]
+    new: list[str]
+    is_py: bool
+    old_map: dict[int, str]
+    new_map: dict[int, str]
+    old_extents: dict[str, tuple[int, int]]
+    new_extents: dict[str, tuple[int, int]]
+    classes: set[str]  # new-side symbols that are classes
+
+
+@dataclass
 class Unit:
     file: str
     symbol: str
@@ -86,10 +107,15 @@ class Unit:
     changed_lines: list[str]
     whole: bool  # pure addition of a whole symbol / file
     order: tuple
+    fd: FileDiff = field(repr=False, default=None)  # type: ignore[assignment]
 
     @property
     def key(self) -> tuple[str, str]:
         return (self.file, self.symbol)
+
+    def text_for(self, context: str | None) -> str:
+        """The hunk text, widened to ``context`` when the document asks for it."""
+        return context_text(self, context) if context else self.text
 
 
 HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -130,10 +156,12 @@ def file_ops(repo: str, base: str, head: str, path: str,
     return ops
 
 
-def symbol_map(src: str) -> tuple[dict[int, str], dict[str, tuple[int, int]]]:
-    """Line -> innermost enclosing def/class qualified name; symbol -> span."""
+def symbol_map(src: str) -> tuple[dict[int, str], dict[str, tuple[int, int]], set[str]]:
+    """Line -> innermost enclosing def/class qualified name; symbol -> span;
+    the subset of symbols that are classes."""
     tree = ast.parse(src)
     spans: list[tuple[int, int, str]] = []
+    classes: set[str] = set()
 
     def visit(node: ast.AST, prefix: str) -> None:
         for child in ast.iter_child_nodes(node):
@@ -141,6 +169,8 @@ def symbol_map(src: str) -> tuple[dict[int, str], dict[str, tuple[int, int]]]:
                 name = prefix + child.name
                 start = min([child.lineno] + [d.lineno for d in child.decorator_list])
                 spans.append((start, child.end_lineno or child.lineno, name))
+                if isinstance(child, ast.ClassDef):
+                    classes.add(name)
                 visit(child, name + ".")
             else:
                 visit(child, prefix)
@@ -152,7 +182,7 @@ def symbol_map(src: str) -> tuple[dict[int, str], dict[str, tuple[int, int]]]:
         extents.setdefault(name, (start, end))
         for ln in range(start, end + 1):
             line_to_sym[ln] = name
-    return line_to_sym, extents
+    return line_to_sym, extents, classes
 
 
 def assign_symbols(ops: list[Op], old_map: dict[int, str], new_map: dict[int, str]) -> None:
@@ -276,15 +306,18 @@ def extract_units(repo: str, base: str, head: str) -> list[Unit]:
         ops = file_ops(repo, base, head, path, old, new)
         is_py = path.endswith(".py")
         extents: dict[str, tuple[int, int]] = {}
+        old_extents: dict[str, tuple[int, int]] = {}
         old_map: dict[int, str] = {}
         new_map: dict[int, str] = {}
+        classes: set[str] = set()
         if is_py:
             try:
-                old_map = symbol_map(old_src)[0] if old_src else {}
-                new_map, extents = symbol_map(new_src) if new_src else ({}, {})
+                old_map, old_extents, _ = symbol_map(old_src) if old_src else ({}, {}, set())
+                new_map, extents, classes = symbol_map(new_src) if new_src else ({}, {}, set())
                 assign_symbols(ops, old_map, new_map)
             except SyntaxError:
                 is_py = False
+        fd = FileDiff(path, ops, old, new, is_py, old_map, new_map, old_extents, extents, classes)
         changes = [i for i, o in enumerate(ops) if o.tag != " "]
         if not is_py:
             for n, (lo, hi) in enumerate(windows(ops, changes, set()), 1):
@@ -308,8 +341,45 @@ def extract_units(repo: str, base: str, head: str) -> list[Unit]:
                 whole = bool(ext) and all(
                     o.tag == "+" for o in ops if o.new is not None and ext[0] <= o.new <= ext[1]
                 )
-            units.append(Unit(path, symbol, text, unit_hash(changed), changed, whole, (path, mine[0])))
+            units.append(Unit(path, symbol, text, unit_hash(changed), changed, whole, (path, mine[0]), fd))
     return units
+
+
+def context_text(unit: Unit, spec: str) -> str:
+    """Render the unit as one section covering a wider span of its file.
+
+    ``spec`` is ``class`` (the innermost class enclosing the unit's symbol),
+    ``file`` (the whole file), or a qualified symbol name from the new side of
+    the file.  The span is the union of that symbol's old and new extents, so
+    every change inside it, this unit's or another's, is shown as a diff.
+    """
+    fd = unit.fd
+    if spec == "file":
+        lo, hi = 0, len(fd.ops) - 1
+        heading = ""
+    else:
+        if spec == "class":
+            if not fd.is_py:
+                raise SystemExit(f"{unit.file}::{unit.symbol}: data-context=\"class\" needs a Python file")
+            parts = unit.symbol.split(".")
+            enclosing = [".".join(parts[:n]) for n in range(len(parts), 0, -1)]
+            spec = next((c for c in enclosing if c in fd.classes), None)
+            if spec is None:
+                raise SystemExit(f"{unit.file}::{unit.symbol}: no enclosing class for data-context=\"class\"")
+        new_ext = fd.new_extents.get(spec)
+        old_ext = fd.old_extents.get(spec)
+        if not new_ext and not old_ext:
+            raise SystemExit(f"{unit.file}::{unit.symbol}: data-context symbol {spec!r} not found")
+        idx = [
+            i for i, o in enumerate(fd.ops)
+            if (new_ext and o.new is not None and new_ext[0] <= o.new <= new_ext[1])
+            or (old_ext and o.old is not None and old_ext[0] <= o.old <= old_ext[1])
+        ]
+        if not idx:
+            raise SystemExit(f"{unit.file}::{unit.symbol}: data-context symbol {spec!r} is empty")
+        lo, hi = idx[0], idx[-1]
+        heading = spec
+    return render_section(fd.ops, lo, hi, heading)
 
 
 # ------------------------------------------------------------------ html model
@@ -484,7 +554,8 @@ def sync_document(doc: str, units: dict[tuple[str, str], Unit], placed: set, cou
                 attrs = re.sub(r'\bdata-hash="[^"]*"', new_hash, attrs, count=1)
             else:
                 attrs = attrs.rstrip() + " " + new_hash
-            pieces.append(f"<pre{attrs}>\n{html.escape(unit.text, quote=False)}\n</pre>")
+            text = unit.text_for(pre.attrs.get("data-context"))
+            pieces.append(f"<pre{attrs}>\n{html.escape(text, quote=False)}\n</pre>")
         pos = pre.end
     pieces.append(doc[pos:])
     return "".join(pieces)

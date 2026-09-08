@@ -48,8 +48,19 @@
      Autograd function for router gating linear.
 </pre>
 <h3>Declaring a contract with spmd_typecheck</h3>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_GatherFromModelParallelRegion.spmd_typecheck" data-hash="44f9a73e16" data-render="added">
-@@ -267,6 +289,12 @@ _GatherFromModelParallelRegion.forward
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_GatherFromModelParallelRegion.spmd_typecheck" data-hash="44f9a73e16" data-render="added" data-context="class">
+@@ -256,18 +278,24 @@ _GatherFromModelParallelRegion
+ class _GatherFromModelParallelRegion(torch.autograd.Function):
+     """Gather the input from model parallel region and concatinate."""
+ 
+     @staticmethod
+     def symbolic(graph, input_, group):
+         """Symbolic function for tracing."""
+         return _gather_along_last_dim(input_, group)
+ 
+     @staticmethod
+     def forward(ctx, input_, group):
+         """Forward function."""
          ctx.group = group
          return _gather_along_last_dim(input_, group)
  
@@ -62,9 +73,21 @@
      @staticmethod
      def backward(ctx, grad_output):
          """Backward function."""
+         return _split_along_last_dim(grad_output, ctx.group), None
 </pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ScatterToSequenceParallelRegion.spmd_typecheck" data-hash="a7d955f907" data-render="added">
-@@ -287,6 +315,12 @@ _ScatterToSequenceParallelRegion.forward
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ScatterToSequenceParallelRegion.spmd_typecheck" data-hash="a7d955f907" data-render="added" data-context="class">
+@@ -276,18 +304,24 @@ _ScatterToSequenceParallelRegion
+ class _ScatterToSequenceParallelRegion(torch.autograd.Function):
+     """Split the input and keep only the corresponding chuck to the rank."""
+ 
+     @staticmethod
+     def symbolic(graph, input_, group):
+         """Symbolic function for tracing."""
+         return _split_along_first_dim(input_, group)
+ 
+     @staticmethod
+     def forward(ctx, input_, group):
+         """Forward function."""
          ctx.group = group
          return _split_along_first_dim(input_, group)
  
@@ -77,9 +100,23 @@
      @staticmethod
      def backward(ctx, grad_output):
          """Backward function."""
+         return _gather_along_first_dim(grad_output, ctx.group), None
 </pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceScatterToSequenceParallelRegion.spmd_typecheck" data-hash="1f2d251709" data-render="added">
-@@ -364,6 +405,12 @@ _ReduceScatterToSequenceParallelRegion.forward
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceScatterToSequenceParallelRegion.spmd_typecheck" data-hash="1f2d251709" data-render="added" data-context="class">
+@@ -351,27 +392,33 @@ _ReduceScatterToSequenceParallelRegion
+ class _ReduceScatterToSequenceParallelRegion(torch.autograd.Function):
+     """Reduce scatter the input from the model parallel region."""
+ 
+     @staticmethod
+     def symbolic(graph, input_, group, input_split_sizes=None, use_global_buffer=False):
+         """Symbolic function for tracing."""
+         return _reduce_scatter_along_first_dim(input_, group, input_split_sizes, use_global_buffer)
+ 
+     @staticmethod
+     def forward(ctx, input_, group, input_split_sizes=None, use_global_buffer=False):
+         """Forward function."""
+         ctx.group = group
+         ctx.input_split_sizes = input_split_sizes
          ctx.use_global_buffer = use_global_buffer
          return _reduce_scatter_along_first_dim(input_, group, input_split_sizes, use_global_buffer)
  
@@ -92,9 +129,28 @@
      @staticmethod
      def backward(ctx, grad_output):
          """Backward function."""
+         input_split_sizes = ctx.input_split_sizes
+         use_global_buffer = ctx.use_global_buffer
+         return (
+             _gather_along_first_dim(grad_output, ctx.group, input_split_sizes, use_global_buffer),
+             None,
+             None,
+             None,
+         )
 </pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_AllGatherFromTensorParallelRegion.spmd_typecheck" data-hash="0279d6d690" data-render="added">
-@@ -391,6 +438,12 @@ _AllGatherFromTensorParallelRegion.forward
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_AllGatherFromTensorParallelRegion.spmd_typecheck" data-hash="0279d6d690" data-render="added" data-context="class">
+@@ -380,18 +427,24 @@ _AllGatherFromTensorParallelRegion
+ class _AllGatherFromTensorParallelRegion(torch.autograd.Function):
+     """Gather the input from model parallel region and concatenate."""
+ 
+     @staticmethod
+     def symbolic(graph, input_, group):
+         """Symbolic function for tracing."""
+         return _gather_along_last_dim(input_, group)
+ 
+     @staticmethod
+     def forward(ctx, input_, group):
+         """Forward function."""
          ctx.group = group
          return _gather_along_last_dim(input_, group)
  
@@ -107,9 +163,21 @@
      @staticmethod
      def backward(ctx, grad_output):
          """Backward function."""
+         return _reduce_scatter_along_last_dim(grad_output, ctx.group), None
 </pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceScatterToTensorParallelRegion.spmd_typecheck" data-hash="8eaac0cc87" data-render="added">
-@@ -411,6 +464,12 @@ _ReduceScatterToTensorParallelRegion.forward
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceScatterToTensorParallelRegion.spmd_typecheck" data-hash="8eaac0cc87" data-render="added" data-context="class">
+@@ -400,18 +453,24 @@ _ReduceScatterToTensorParallelRegion
+ class _ReduceScatterToTensorParallelRegion(torch.autograd.Function):
+     """Reduce scatter the input from the model parallel region."""
+ 
+     @staticmethod
+     def symbolic(graph, input_, group):
+         """Symbolic function for tracing."""
+         return _reduce_scatter_along_last_dim(input_, group)
+ 
+     @staticmethod
+     def forward(ctx, input_, group):
+         """Forward function."""
          ctx.group = group
          return _reduce_scatter_along_last_dim(input_, group)
  
@@ -122,9 +190,40 @@
      @staticmethod
      def backward(ctx, grad_output):
          """Backward function."""
+         return _gather_along_last_dim(grad_output, ctx.group), None
 </pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_AllToAll.spmd_typecheck" data-hash="65f0b95fde" data-render="added">
-@@ -450,6 +509,12 @@ _AllToAll.forward
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_AllToAll.spmd_typecheck" data-hash="65f0b95fde" data-render="added" data-context="class">
+@@ -420,42 +479,48 @@ _AllToAll
+ class _AllToAll(torch.autograd.Function):
+     @staticmethod
+     def forward(ctx, group, input, output_split_sizes, input_split_sizes):
+         """Forward function."""
+         ctx.group = group
+         ctx.output_split_sizes = output_split_sizes
+         ctx.input_split_sizes = input_split_sizes
+ 
+         world_size = group.size()
+         # Bypass the function if we are using only 1 GPU.
+         if world_size == 1:
+             return input
+ 
+         input = input.contiguous()
+         if output_split_sizes is None:
+             # Equal split (all2all)
+             output = torch.empty_like(input)
+         else:
+             # Unequal split (all2all-v)
+             output = input.new_empty(
+                 size=[sum(output_split_sizes)] + list(input.size()[1:]),
+                 dtype=input.dtype,
+                 device=torch.cuda.current_device(),
+             )
+         torch.distributed.all_to_all_single(
+             output,
+             input,
+             output_split_sizes=output_split_sizes,
+             input_split_sizes=input_split_sizes,
+             group=group,
          )
          return output
  
@@ -137,9 +236,33 @@
      @staticmethod
      def backward(ctx, *grad_output):
          """Backward function."""
+         return (
+             None,
+             _AllToAll.apply(ctx.group, *grad_output, ctx.input_split_sizes, ctx.output_split_sizes),
+             None,
+             None,
+         )
 </pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/layers.py" data-symbol="LinearWithFrozenWeight.spmd_typecheck" data-hash="92c3c5ddf2" data-render="added">
-@@ -353,6 +354,25 @@ LinearWithFrozenWeight.forward
+<pre class="hunk" data-file="megatron/core/tensor_parallel/layers.py" data-symbol="LinearWithFrozenWeight.spmd_typecheck" data-hash="92c3c5ddf2" data-render="added" data-context="class">
+@@ -335,33 +336,52 @@ LinearWithFrozenWeight
+ class LinearWithFrozenWeight(torch.autograd.Function):
+     """Linear operator that does not calculate gradient for weight.
+     This op and LinearWithGradAccumulationAndAsyncCommunication performs
+     mathematically-identical forward and DGRAD.
+ 
+     Conceptually this op is the same as torch.nn.functional.linear with
+     weight.requires_grad==False, but in experiments they are not identical
+     mathematically."""
+ 
+     @staticmethod
+     @custom_fwd
+     def forward(ctx, input, weight, bias, allreduce_dgrad, tp_group):
+         """Forward with frozen weight."""
+         ctx.save_for_backward(weight)
+         ctx.allreduce_dgrad = allreduce_dgrad
+         ctx.tp_group = tp_group
+         output = torch.matmul(input, weight.t())
+         if bias is not None:
              output = output + bias
          return output
  
@@ -165,6 +288,15 @@
      @staticmethod
      @custom_bwd
      def backward(ctx, grad_output):
+         """Backward with frozen weight."""
+         (weight,) = ctx.saved_tensors
+         grad_input = grad_output.matmul(weight)
+ 
+         if ctx.allreduce_dgrad:
+             # All-reduce. Note: here async and sync are effectively the same.
+             torch.distributed.all_reduce(grad_input, group=ctx.tp_group)
+ 
+         return grad_input, None, None, None, None
 </pre>
 <pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="_named_non_tensor_args" data-hash="54f01c0848" data-render="added">
 @@ -666,0 +675,10 @@ _named_non_tensor_args

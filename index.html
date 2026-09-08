@@ -226,8 +226,18 @@ TODO: I wonder if it would be easier / less error prone to just have a variant o
 rules where you just say what the fwd/bwd impl is and we can infer the typing
 rule from that.
 
-<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceFromModelParallelRegion.spmd_typecheck" data-hash="f5a40f79fb" data-render="added">
-@@ -227,6 +234,15 @@ _ReduceFromModelParallelRegion.forward
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceFromModelParallelRegion.spmd_typecheck" data-hash="f5a40f79fb" data-render="added" data-context="class">
+@@ -217,17 +224,26 @@ _ReduceFromModelParallelRegion
+ class _ReduceFromModelParallelRegion(torch.autograd.Function):
+     """All-reduce the input from the model parallel region."""
+ 
+     @staticmethod
+     def symbolic(graph, input_, group):
+         """Symbolic function for tracing."""
+         return _reduce(input_, group)
+ 
+     @staticmethod
+     def forward(ctx, input_, group):
          """Forward function."""
          return _reduce(input_, group)
  
@@ -243,10 +253,22 @@ rule from that.
      @staticmethod
      def backward(ctx, grad_output):
          """Backward function."""
+         return grad_output, None
 </pre>
 <!-- TODO: Each native collective states its contract beside its forward/backward, in adjoint pairs: copy/reduce, scatter/gather on the last dim, scatter/gather on the sequence dim, the reduce-scatters, all-to-all. Then the linears, whose input type depends on allreduce_dgrad and sequence_parallel. -->
-<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_CopyToModelParallelRegion.spmd_typecheck" data-hash="fa4ffa6d7c" data-render="added">
-@@ -208,6 +209,12 @@ _CopyToModelParallelRegion.forward
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_CopyToModelParallelRegion.spmd_typecheck" data-hash="fa4ffa6d7c" data-render="added" data-context="class">
+@@ -197,18 +198,24 @@ _CopyToModelParallelRegion
+ class _CopyToModelParallelRegion(torch.autograd.Function):
+     """Pass the input to the model parallel region."""
+ 
+     @staticmethod
+     def symbolic(graph, input_, group):
+         """Symbolic function for tracing."""
+         return input_
+ 
+     @staticmethod
+     def forward(ctx, input_, group):
+         """Forward function."""
          ctx.group = group
          return input_
  
@@ -259,9 +281,21 @@ rule from that.
      @staticmethod
      def backward(ctx, grad_output):
          """Backward function."""
+         return _reduce(grad_output, ctx.group), None
 </pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ScatterToModelParallelRegion.spmd_typecheck" data-hash="09dcdadcbd" data-render="added">
-@@ -247,6 +263,12 @@ _ScatterToModelParallelRegion.forward
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ScatterToModelParallelRegion.spmd_typecheck" data-hash="09dcdadcbd" data-render="added" data-context="class">
+@@ -236,18 +252,24 @@ _ScatterToModelParallelRegion
+ class _ScatterToModelParallelRegion(torch.autograd.Function):
+     """Split the input and keep only the corresponding chuck to the rank."""
+ 
+     @staticmethod
+     def symbolic(graph, input_, group):
+         """Symbolic function for tracing."""
+         return _split_along_last_dim(input_, group)
+ 
+     @staticmethod
+     def forward(ctx, input_, group):
+         """Forward function."""
          ctx.group = group
          return _split_along_last_dim(input_, group)
  
@@ -274,9 +308,38 @@ rule from that.
      @staticmethod
      def backward(ctx, grad_output):
          """Backward function."""
+         return _gather_along_last_dim(grad_output, ctx.group), None
 </pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_GatherFromSequenceParallelRegion.spmd_typecheck" data-hash="fcc3adb79e" data-render="added">
-@@ -324,6 +358,13 @@ _GatherFromSequenceParallelRegion.forward
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_GatherFromSequenceParallelRegion.spmd_typecheck" data-hash="fcc3adb79e" data-render="added" data-context="class">
+@@ -296,53 +330,60 @@ _GatherFromSequenceParallelRegion
+ class _GatherFromSequenceParallelRegion(torch.autograd.Function):
+     """Gather the input from sequence parallel region and concatinate."""
+ 
+     @staticmethod
+     def symbolic(
+         graph,
+         input_,
+         group,
+         tensor_parallel_output_grad=True,
+         output_split_sizes=None,
+         use_global_buffer=False,
+     ):
+         """Symbolic function for tracing."""
+         return _gather_along_first_dim(input_, group, output_split_sizes, use_global_buffer)
+ 
+     @staticmethod
+     def forward(
+         ctx,
+         input_,
+         group,
+         tensor_parallel_output_grad=True,
+         output_split_sizes=None,
+         use_global_buffer=False,
+     ):
+         """Forward function."""
+         ctx.tensor_parallel_output_grad = tensor_parallel_output_grad
+         ctx.group = group
+         ctx.output_split_sizes = output_split_sizes
          ctx.use_global_buffer = use_global_buffer
          return _gather_along_first_dim(input_, group, output_split_sizes, use_global_buffer)
  
@@ -290,9 +353,75 @@ rule from that.
      @staticmethod
      def backward(ctx, grad_output):
          """Backward function."""
+         tensor_parallel_output_grad = ctx.tensor_parallel_output_grad
+ 
+         # If the computation graph after the gather operation is
+         # in the tensor parallel mode, output gradients need to reduce
+         # scattered and whereas if the computation is duplicated,
+         # output gradients need to be scattered.
+         if tensor_parallel_output_grad:
+             return (
+                 _reduce_scatter_along_first_dim(
+                     grad_output, ctx.group, ctx.output_split_sizes, ctx.use_global_buffer
+                 ),
+                 None,
+                 None,
+                 None,
+                 None,
+             )
+         else:
+             assert ctx.output_split_sizes is None
+             return (_split_along_first_dim(grad_output, ctx.group), None, None, None, None)
 </pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/layers.py" data-symbol="LinearWithGradAccumulationAndAsyncCommunication.spmd_typecheck" data-hash="6fbac5a048" data-render="added">
-@@ -488,6 +508,25 @@ LinearWithGradAccumulationAndAsyncCommunication.forward
+<pre class="hunk" data-file="megatron/core/tensor_parallel/layers.py" data-symbol="LinearWithGradAccumulationAndAsyncCommunication.spmd_typecheck" data-hash="6fbac5a048" data-render="added" data-context="class">
+@@ -441,200 +461,219 @@ LinearWithGradAccumulationAndAsyncCommunication
+ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
+     """See linear_with_grad_accumulation_and_async_allreduce"""
+ 
+     @staticmethod
+     @custom_fwd
+     def forward(
+         ctx,
+         input,
+         weight,
+         bias,
+         gradient_accumulation_fusion,
+         allreduce_dgrad,
+         sequence_parallel,
+         grad_output_buffer,
+         wgrad_deferral_limit,
+         tp_group,
+     ):
+         """Forward."""
+         if gradient_accumulation_fusion and hasattr(weight, "main_grad"):
+             main_grad = weight.main_grad
+         else:
+             main_grad = None
+         ctx.save_for_backward(input, weight)
+         # We can't save main_grad in save_for_backward as this module would be
+         # reused across layers like MTP logits. So, to prevent in-place modification
+         # checks we save the tensor in ctx.
+         ctx.main_grad = main_grad
+         ctx.use_bias = bias is not None
+         ctx.gradient_accumulation_fusion = gradient_accumulation_fusion
+         ctx.allreduce_dgrad = allreduce_dgrad
+         ctx.sequence_parallel = sequence_parallel
+         ctx.wgrad_deferral_limit = wgrad_deferral_limit
+         ctx.grad_output_buffer = grad_output_buffer
+         ctx.tp_group = tp_group
+ 
+         if sequence_parallel:
+             dim_size = list(input.size())
+             dim_size[0] = dim_size[0] * tp_group.size()
+ 
+             all_gather_buffer = get_global_memory_buffer().get_tensor(dim_size, input.dtype, "mpu")
+             dist_all_gather_func(all_gather_buffer, input, group=tp_group)
+             total_input = all_gather_buffer
+         else:
+             total_input = input
+ 
+         output = torch.matmul(total_input, weight.t())
+         if bias is not None:
              output = output + bias
          return output
  
@@ -318,6 +447,153 @@ rule from that.
      @staticmethod
      @custom_bwd
      def backward(ctx, grad_output):
+         """Backward."""
+         input, weight = ctx.saved_tensors
+         main_grad = ctx.main_grad
+         use_bias = ctx.use_bias
+         grad_output_buffer = ctx.grad_output_buffer
+         wgrad_deferral_limit = ctx.wgrad_deferral_limit
+         handle = None
+         tp_group = ctx.tp_group
+ 
+         if ctx.gradient_accumulation_fusion:
+             weight.main_grad = main_grad
+ 
+         wgrad_compute = True
+         if grad_output_buffer is not None:
+             if wgrad_deferral_limit == 0 or len(grad_output_buffer) &lt; wgrad_deferral_limit:
+                 grad_output_buffer.append(grad_output)
+                 wgrad_compute = False
+ 
+         if wgrad_compute:
+             if ctx.sequence_parallel:
+                 dim_size = list(input.size())
+                 dim_size[0] = dim_size[0] * tp_group.size()
+ 
+                 all_gather_buffer = get_global_memory_buffer().get_tensor(
+                     dim_size, input.dtype, "mpu"
+                 )
+                 handle = dist_all_gather_func(
+                     all_gather_buffer, input, group=tp_group, async_op=True
+                 )
+ 
+                 # Here we rely on CUDA_DEVICE_MAX_CONNECTIONS=1 to ensure that the
+                 # gather is scheduled before the input gradient computation
+                 total_input = all_gather_buffer
+             else:
+                 total_input = input
+         grad_input = grad_output.matmul(weight)
+ 
+         if ctx.sequence_parallel and wgrad_compute:
+             # pylint: disable=possibly-used-before-assignment
+             handle.wait()
+ 
+         if wgrad_compute:
+             grad_output, total_input = prepare_input_tensors_for_wgrad_compute(
+                 grad_output, total_input
+             )
+ 
+         if ctx.allreduce_dgrad:
+             # Asynchronous all-reduce
+             handle = torch.distributed.all_reduce(grad_input, group=tp_group, async_op=True)
+             # Here we rely on CUDA_DEVICE_MAX_CONNECTIONS=1 to ensure that the
+             # all-reduce is scheduled before the weight gradient computation
+ 
+         if ctx.sequence_parallel:
+             assert not ctx.allreduce_dgrad
+             dim_size = list(input.size())
+             sub_grad_input = torch.empty(
+                 dim_size, dtype=input.dtype, device=torch.cuda.current_device(), requires_grad=False
+             )
+             # reduce_scatter
+             handle = dist_reduce_scatter_func(
+                 sub_grad_input, grad_input, group=tp_group, async_op=True
+             )
+             # Here we rely on CUDA_DEVICE_MAX_CONNECTIONS=1 to ensure that the
+             # reduce scatter is scheduled before the weight gradient computation
+ 
+         if ctx.gradient_accumulation_fusion:
+             if wgrad_compute:
+                 # In case of Megatron-FSDP, need to create main grad buffers in-place
+                 if hasattr(weight, "__fsdp_param__"):
+                     weight.main_grad = weight.get_main_grad()
+                     # Import here to avoid circular import
+                     from megatron.core.extensions.transformer_engine import te_general_gemm
+ 
+                     if te_general_gemm is not None:
+                         # Use TE general_gemm to support mixed-precision output
+                         # (e.g. bf16 input -&gt; fp32 main_grad) which torch.matmul
+                         # does not support via the out= parameter.
+                         te_general_gemm(
+                             total_input,
+                             grad_output,
+                             out_dtype=weight.main_grad.dtype,
+                             layout="NT",
+                             out=weight.main_grad,
+                             grad=True,
+                         )
+                     else:
+                         torch.matmul(grad_output.t(), total_input, out=weight.main_grad)
+                 else:
+                     if weight.main_grad.dtype == torch.float32:
+                         fused_weight_gradient_mlp_cuda.wgrad_gemm_accum_fp32(
+                             total_input, grad_output, weight.main_grad
+                         )
+                     elif weight.main_grad.dtype in (torch.float16, torch.bfloat16):
+                         fused_weight_gradient_mlp_cuda.wgrad_gemm_accum_fp16(
+                             total_input, grad_output, weight.main_grad
+                         )
+                     else:
+                         raise RuntimeError(
+                             "Unsupported gradient type for gradient accumulation fusion"
+                         )
+ 
+             if hasattr(weight, "grad_added_to_main_grad"):
+                 # When overlap_grad_reduce is True, need to ensure that backward hooks
+                 # are all run on the main backprop thread to prevent deadlocks. Setup
+                 # dummy grad_weight tensor to prevent backward hooks from being run
+                 # in a background thread.
+                 if getattr(weight, "zero_out_wgrad", False):
+                     if HAVE_TE:
+                         # get_dummy_wgrad function in TE enables reuse of single dummy wgrad buffer
+                         # across different layers/microbatches. The function accepts shape as list.
+                         grad_weight = get_dummy_wgrad(
+                             list(weight.main_grad.shape), input.dtype, zero=True
+                         )
+                     else:
+                         grad_weight = torch.zeros(
+                             weight.main_grad.shape,
+                             dtype=input.dtype,
+                             device=torch.cuda.current_device(),
+                             requires_grad=False,
+                         )
+                 else:
+                     if HAVE_TE:
+                         grad_weight = get_dummy_wgrad(list(weight.main_grad.shape), input.dtype)
+                     else:
+                         grad_weight = torch.empty(
+                             weight.main_grad.shape,
+                             dtype=input.dtype,
+                             device=torch.cuda.current_device(),
+                             requires_grad=False,
+                         )
+                 weight.grad_added_to_main_grad = True
+             else:
+                 grad_weight = None
+         else:
+             grad_weight = grad_output.t().matmul(total_input)
+         grad_bias = grad_output.sum(dim=0) if use_bias else None
+ 
+         if ctx.sequence_parallel:
+             handle.wait()
+             # Need to return None's as gradient has to flow for all the input arguments
+             # provided during forward
+             return (sub_grad_input, grad_weight, grad_bias, None, None, None, None, None, None)
+ 
+         if ctx.allreduce_dgrad:
+             handle.wait()
+ 
+         return grad_input, grad_weight, grad_bias, None, None, None, None, None, None
 </pre>
 <!-- TODO: Transformer Engine's linear functions get the same contracts bolted on by name; the two loss auto-scalers are identity-on-output contracts where the generic local rule would be wrong. -->
 <pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="_assert_te_linear_types" data-hash="c2957a4f4f" data-render="added">

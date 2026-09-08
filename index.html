@@ -66,6 +66,7 @@ TODO: switch DSv3 to global spmd types
 
 <section id="what-type-checks-means">
 <h2>Annotating custom autograd functions</h2>
+<h3>Declaring a contract with spmd_typecheck</h3>
 <!-- TODO: Introduce R, V, I, S(d) through the five-line contract on _ReduceFromModelParallelRegion: V in, I out, R when the output carries no gradient. A process group names a mesh axis. -->
 <pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceFromModelParallelRegion.spmd_typecheck" data-hash="f5a40f79fb" data-render="added">
 @@ -227,6 +234,15 @@ _ReduceFromModelParallelRegion.forward
@@ -160,538 +161,7 @@ TODO: switch DSv3 to global spmd types
      @custom_bwd
      def backward(ctx, grad_output):
 </pre>
-<!-- TODO: Purely local kernels never communicate; register_local_autograd_function gives them the generic local rule instead of a hand-written contract. -->
-<pre class="hunk" data-file="megatron/core/fusions/fused_bias_swiglu.py" data-symbol="SwiGLUFunction" data-hash="ce876e4785">
-@@ -144,6 +145,7 @@ BiasSwiGLUFunction.backward
-         return tmp, tmp, None, None
- 
- 
-+@spmd.register_local_autograd_function
- class SwiGLUFunction(torch.autograd.Function):
-     """Custom autograd function for SwiGLU activation without bias."""
- 
-</pre>
-<pre class="hunk" data-file="megatron/core/fusions/fused_mla_yarn_rope_apply.py" data-symbol="ApplyMLARotaryEmbQ" data-hash="ce876e4785">
-@@ -207,6 +208,7 @@ rotary_bwd_q_kernel
-     tl.store(DO + x_2_off, x_2, mask=mask)
- 
- 
-+@spmd.register_local_autograd_function
- class ApplyMLARotaryEmbQ(torch.autograd.Function):
-     """
-     Autograd function for applying YARN RoPE to MLA's query.
-</pre>
-</section>
-
-<section id="who-declares-what">
-<h2>Handling FSDP</h2>
-<!-- TODO: The model asserts only the axis it shards (TP, read off Megatron's parameter attributes). DDP asserts R on every mesh axis inside its dp_cp reduction group, because its backward collective is what makes that promise true; the mesh keeps DP and CP separate, so the promise is folded onto each. Tensors with no gradient are the model's alone to type. annotate_model ties it together. DDP's own gradient accumulation and reduction are bookkeeping, not model computation, so they run under no_typecheck. -->
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dense_parameter" data-hash="39641952d1" data-render="added">
-@@ -0,0 +76,11 @@ _annotate_dense_parameter
-+
-+
-+def _annotate_dense_parameter(tensor: torch.Tensor) -&gt; None:
-+    """Annotate a trainable parameter on the axis the model shards it over.
-+
-+    Only TP is the model's to declare. Whether the parameter is replicated across
-+    data parallelism, and that its gradient gets summed there, is a promise made
-+    by whichever wrapper performs that reduction (see
-+    ``DistributedDataParallel``), so it is left for that wrapper to assert.
-+    """
-+    spmd.assert_type(tensor, {"TP": _tensor_parallel_type(tensor)})
-</pre>
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_tensor_parallel_type" data-hash="6ffc16d35a" data-render="added">
-@@ -0,0 +20,26 @@ _tensor_parallel_type
-+
-+
-+def _tensor_parallel_type(tensor: torch.Tensor) -&gt; spmd.SpmdType:
-+    """Infer a parameter's TP type from Megatron's distribution metadata.
-+
-+    ``megatron.core.tensor_parallel.layers.set_tensor_model_parallel_attributes``
-+    marks physically sharded parameters with ``tensor_model_parallel`` and records
-+    their global shard dimension in ``partition_dim``. Column-parallel weights use
-+    dimension 0, while row-parallel weights use dimension 1.
-+
-+    ``sequence_parallel`` means something different when attached to a
-+    parameter: the parameter value is replicated, but each TP rank accumulates
-+    a gradient from its local sequence shard. The
-+    ``_allreduce_non_tensor_model_parallel_grads`` helper in
-+    ``megatron.core.distributed.finalize_model_grads`` reads this attribute and
-+    sums those partial gradients across TP, which is exactly the R (replicated
-+    value, partial gradient) contract.
-+
-+    Other trainable parameters are invariant across TP. Non-trainable tensors
-+    are treated as replicated because only their forward value matters.
-+    """
-+    if getattr(tensor, "tensor_model_parallel", False):
-+        return spmd.S(getattr(tensor, "partition_dim"))
-+    if getattr(tensor, "sequence_parallel", False):
-+        return spmd.R
-+    return spmd.I if tensor.requires_grad else spmd.R
-</pre>
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="model_parallel_mesh" data-hash="5209209e9e" data-render="added">
-@@ -0,0 +87,15 @@ model_parallel_mesh
-+
-+
-+def model_parallel_mesh() -&gt; dict[str, spmd.MeshAxis]:
-+    """Return the mesh Megatron's dense layers are typed against.
-+
-+    Megatron does not build a DeviceMesh; it hands out process groups from
-+    ``parallel_state``. The three that matter for typing dense computation are
-+    tensor parallel, data parallel (without context parallel folded in), and
-+    context parallel.
-+    """
-+    return {
-+        "TP": spmd.MeshAxis.of(parallel_state.get_tensor_model_parallel_group()),
-+        "DP": spmd.MeshAxis.of(parallel_state.get_data_parallel_group(with_context_parallel=False)),
-+        "CP": spmd.MeshAxis.of(parallel_state.get_context_parallel_group()),
-+    }
-</pre>
-<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.forward" data-hash="61badae4d8" data-render="added">
-@@ -357,3 +358,8 @@ DistributedDataParallel.__init__
-             self.enable_forward_pre_hook()
-         self.overlap_param_gather_with_optimizer_step = False
- 
-+    def forward(self, *inputs, **kwargs):
-+        """Calls the wrapped module's forward() method."""
-+        if spmd.is_type_checking():
-+            self._assert_parameters_replicated()
-+        return super().forward(*inputs, **kwargs)
-</pre>
-<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel._assert_parameters_replicated" data-hash="2ceede36d8" data-render="added">
-@@ -360,3 +366,27 @@ DistributedDataParallel
-+
-+    def _assert_parameters_replicated(self):
-+        """Promise, on the type-checking mesh, that this wrapper reduces the gradients.
-+
-+        A parameter whose gradient is summed here is replicated (R) along the
-+        axes of the reduction group: identical value on every rank, partial
-+        gradient. The model only knows how its parameters are sharded and leaves
-+        these axes to whichever wrapper performs the reduction.
-+
-+        The dense reduction group folds data and context parallelism together,
-+        while the type-checking mesh may keep them as separate axes, so the
-+        promise is made on each mesh axis the group contains. Expert parameters
-+        are typed on the expert mesh, where their reduction group is an axis.
-+        """
-+        mesh = spmd.current_mesh()
-+        dense_reduction_axis = spmd.MeshAxis.of(self.dp_cp_group)
-+        for param in self.params_with_grad:
-+            if getattr(param, 'allreduce', True):
-+                for axis in mesh:
-+                    if axis &lt;= dense_reduction_axis:
-+                        spmd.assert_type(param, {axis: spmd.R})
-+            else:
-+                spmd.assert_type(param, {self.expt_dp_group: spmd.R})
-+
-     def enable_forward_pre_hook(self):
-         """
-         Enable forward pre-hooks needed for param all-gather overlap with forward compute.
-</pre>
-<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel._make_backward_post_hook.hook" data-hash="e837028bb2">
-@@ -433,12 +463,16 @@ DistributedDataParallel._make_backward_post_hook.hook
-             if is_graph_capturing():
-                 return
- 
--            if param in self.param_to_bucket_group:
--                assert param.requires_grad
--                if self.ddp_config.overlap_grad_reduce:
--                    assert (
--                        param.grad is not None
--                    ), 'param.grad being None is not safe when overlap_grad_reduce is True'
-+            if param not in self.param_to_bucket_group:
-+                return
-+            assert param.requires_grad
-+            if self.ddp_config.overlap_grad_reduce:
-+                assert (
-+                    param.grad is not None
-+                ), 'param.grad being None is not safe when overlap_grad_reduce is True'
-+            # Gradient accumulation and reduction are this wrapper's own bookkeeping,
-+            # not model computation, so they are not type-checked.
-+            with spmd.no_typecheck():
-                 if param.grad is not None and (
-                     not param.grad_added_to_main_grad or getattr(param, 'zero_out_wgrad', False)
-                 ):
-</pre>
-<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.start_grad_sync" data-hash="ca273d7a48">
-@@ -532,8 +566,9 @@ DistributedDataParallel.start_grad_sync
-         calls. When overlap_grad_reduce is set to False, calls synchronous
-         communication ops.
-         """
--        for bucket_group in self.bucket_groups + self.expert_parallel_bucket_groups:
--            bucket_group.start_grad_sync()
-+        with spmd.no_typecheck():
-+            for bucket_group in self.bucket_groups + self.expert_parallel_bucket_groups:
-+                bucket_group.start_grad_sync()
- 
-     def finish_grad_sync(self, force_all_reduce: Optional[bool] = False):
-         """
-</pre>
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="annotate_tensor" data-hash="00397e5052" data-render="added">
-@@ -0,0 +63,13 @@ annotate_tensor
-+
-+
-+def annotate_tensor(
-+    tensor: torch.Tensor, *, tensor_parallel_type: spmd.SpmdType | None = None
-+) -&gt; None:
-+    """Annotate a tensor that has no gradient to reduce: a buffer or frozen parameter.
-+
-+    Such a tensor is simply replicated on every axis the model does not shard.
-+    """
-+    spmd.assert_type(
-+        tensor,
-+        {"TP": tensor_parallel_type or _tensor_parallel_type(tensor), "DP": spmd.R, "CP": spmd.R},
-+    )
-</pre>
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="annotate_model" data-hash="c568c6eba7" data-render="added">
-@@ -0,0 +193,34 @@ annotate_model
-+
-+
-+def annotate_model(model: nn.Module) -&gt; None:
-+    """Annotate model-owned tensors, and the few typed scalars, from Megatron's conventions.
-+
-+    The model declares what it knows: how each tensor is sharded. The
-+    data-parallel axis of a trainable parameter is declared by the wrapper that
-+    reduces its gradient, so ``model`` should already be wrapped in
-+    ``DistributedDataParallel``; a bare model leaves that axis untyped and strict
-+    checking will say so at the first use.
-+    """
-+    for module in model.modules():
-+        if isinstance(module, VocabParallelEmbedding):
-+            _annotate_vocab_bounds(module)
-+        # Token dispatchers are plain objects owned by the MoE layer, not submodules.
-+        dispatcher = getattr(module, "token_dispatcher", None)
-+        if isinstance(dispatcher, MoEFlexTokenDispatcher):
-+            _annotate_dispatcher_state(dispatcher)
-+        for tensor in module.parameters(recurse=False):
-+            if not tensor.requires_grad:
-+                annotate_tensor(tensor)
-+            elif _is_expert_parallel_parameter(tensor):
-+                _annotate_expert_parameter(tensor)
-+            else:
-+                _annotate_dense_parameter(tensor)
-+        # DistributedDataParallel shadows ``buffers`` with its list of gradient
-+        # buffers, so call the nn.Module method explicitly.
-+        for tensor in nn.Module.buffers(module, recurse=False):
-+            annotate_tensor(tensor)
-+        # A few production modules, including YarnRotaryEmbedding, own replicated
-+        # constant tensors without registering them as buffers.
-+        for value in vars(module).values():
-+            if isinstance(value, torch.Tensor) and not value.requires_grad:
-+                annotate_tensor(value, tensor_parallel_type=spmd.R)
-</pre>
-</section>
-
-<section id="two-meshes">
-<h2>Expert parallelism</h2>
-<!-- TODO: ETP x EDP x EP tiles the same ranks as TP x DP x CP but cuts them differently. Expert computation runs inside expert_parallel_region and is retagged, not moved, on the way out. Expert parameters are V on EP and sharded on ETP; EDP replication is again the reducer's promise. HybridEP dispatch folds EP and ETP the way DDP folds DP and CP. -->
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="expert_parallel_mesh" data-hash="98a1cb529f" data-render="added">
-@@ -0,0 +102,16 @@ expert_parallel_mesh
-+
-+
-+def expert_parallel_mesh() -&gt; dict[str, spmd.MeshAxis]:
-+    """Return the expert factorization of the same ranks as ``model_parallel_mesh``.
-+
-+    Megatron routes MoE experts with a separate set of process groups: experts
-+    are distributed over EP, each expert's weights are optionally sharded over
-+    ETP, and the remaining ranks (EDP) hold replicas. These groups tile the
-+    same ranks as TP x DP x CP but cut them differently, so tensors crossing
-+    between the two regions must be explicitly reinterpreted.
-+    """
-+    return {
-+        "ETP": spmd.MeshAxis.of(parallel_state.get_expert_tensor_parallel_group()),
-+        "EDP": spmd.MeshAxis.of(parallel_state.get_expert_data_parallel_group()),
-+        "EP": spmd.MeshAxis.of(parallel_state.get_expert_model_parallel_group()),
-+    }
-</pre>
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="expert_parallel_region" data-hash="b73784590f" data-render="added">
-@@ -0,0 +146,11 @@ expert_parallel_region
-+
-+
-+@contextmanager
-+def expert_parallel_region() -&gt; Iterator[None]:
-+    """Type-check the enclosed expert computation on the ETP x EDP x EP mesh.
-+
-+    Tensors produced inside the region carry expert-mesh types. Pass any that
-+    flow back out through ``leave_expert_parallel_region``.
-+    """
-+    with spmd.set_current_mesh(expert_parallel_mesh()):
-+        yield
-</pre>
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="leave_expert_parallel_region" data-hash="7000f553ce" data-render="added">
-@@ -0,0 +157,12 @@ leave_expert_parallel_region
-+
-+
-+def leave_expert_parallel_region(tensor: torch.Tensor) -&gt; torch.Tensor:
-+    """Re-express an ``expert_parallel_region`` result on the enclosing mesh.
-+
-+    Call this after the ``with`` block has exited, so the enclosing mesh is
-+    current again. Both meshes cover the same ranks, so this only retags the
-+    tensor; no data moves.
-+    """
-+    if not spmd.is_type_checking():
-+        return tensor
-+    return spmd.reinterpret_mesh(tensor, spmd.current_mesh())
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/moe_layer.py" data-symbol="MoELayer.routed_experts_compute" data-hash="aa40fce594">
-@@ -549,18 +550,20 @@ MoELayer.routed_experts_compute
-             self.token_dispatcher.dispatch_postprocess(hidden_states, probs)
-         )
-         dispatched_input = self._maybe_record_overload_factor(dispatched_input, tokens_per_expert)
--        if (
--            hasattr(self, "_inference_token_dispatcher")
--            and self.is_inference_cuda_graphed_iteration
--        ):
--            routing_map = self.token_dispatcher.routing_map
--            expert_output, mlp_bias = apply_module(self.experts)(
--                dispatched_input, tokens_per_expert, permuted_probs, routing_map=routing_map
--            )
--        else:
--            expert_output, mlp_bias = apply_module(self.experts)(
--                dispatched_input, tokens_per_expert, permuted_probs
--            )
-+        with expert_parallel_region():
-+            if (
-+                hasattr(self, "_inference_token_dispatcher")
-+                and self.is_inference_cuda_graphed_iteration
-+            ):
-+                routing_map = self.token_dispatcher.routing_map
-+                expert_output, mlp_bias = apply_module(self.experts)(
-+                    dispatched_input, tokens_per_expert, permuted_probs, routing_map=routing_map
-+                )
-+            else:
-+                expert_output, mlp_bias = apply_module(self.experts)(
-+                    dispatched_input, tokens_per_expert, permuted_probs
-+                )
-+        expert_output = leave_expert_parallel_region(expert_output)
-         assert mlp_bias is None, f"mlp_bias is not supported for {type(self.token_dispatcher)}"
-         output = self.token_dispatcher.combine_preprocess(expert_output)
- 
-</pre>
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_is_expert_parallel_parameter" data-hash="451fffc44a" data-render="added">
-@@ -0,0 +118,12 @@ _is_expert_parallel_parameter
-+
-+
-+def _is_expert_parallel_parameter(tensor: torch.Tensor) -&gt; bool:
-+    """Whether Megatron reduces this parameter's gradient over EDP rather than DP.
-+
-+    Megatron has no positive marker for this. Expert modules clear the
-+    ``allreduce`` attribute when expert parallelism is on, meaning "do not
-+    all-reduce this gradient over the regular data-parallel group", and
-+    ``DistributedDataParallel``, the optimizer, and Megatron-FSDP all recover
-+    expert-parallel membership from it with this same expression.
-+    """
-+    return not getattr(tensor, "allreduce", True)
-</pre>
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_expert_tensor_parallel_type" data-hash="fece217d5f" data-render="added">
-@@ -0,0 +46,17 @@ _expert_tensor_parallel_type
-+
-+
-+def _expert_tensor_parallel_type(tensor: torch.Tensor) -&gt; spmd.SpmdType:
-+    """Infer an expert parameter's type on the expert tensor-parallel axis.
-+
-+    This follows the same conventions as ``_tensor_parallel_type`` with one
-+    exception: ``TEGroupedLinear`` in
-+    ``megatron.core.extensions.transformer_engine`` deliberately stamps
-+    ``partition_dim`` on expert weights *without* setting
-+    ``tensor_model_parallel`` (which would change Megatron's num-zeros gradient
-+    accounting), so here the presence of ``partition_dim`` alone marks a shard.
-+    """
-+    if getattr(tensor, "tensor_model_parallel", False) or hasattr(tensor, "partition_dim"):
-+        return spmd.S(getattr(tensor, "partition_dim"))
-+    if getattr(tensor, "sequence_parallel", False):
-+        return spmd.R
-+    return spmd.I if tensor.requires_grad else spmd.R
-</pre>
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_expert_parameter" data-hash="b58e080cc2" data-render="added">
-@@ -0,0 +130,16 @@ _annotate_expert_parameter
-+
-+
-+def _annotate_expert_parameter(tensor: torch.Tensor) -&gt; None:
-+    """Annotate an expert parameter on the axes the model shards it over.
-+
-+    Each EP rank owns different experts, so on the EP axis the parameter is
-+    varying; within one expert the weight may be sharded over ETP. Replication
-+    over EDP is, as for dense parameters, the gradient reducer's promise.
-+    """
-+    spmd.assert_type(
-+        tensor,
-+        {
-+            parallel_state.get_expert_tensor_parallel_group(): _expert_tensor_parallel_type(tensor),
-+            parallel_state.get_expert_model_parallel_group(): spmd.V,
-+        },
-+    )
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_fake_dispatch" data-hash="fd6c905494" data-render="added">
-@@ -352,0 +357,21 @@ _fake_dispatch
-+
-+
-+def _fake_dispatch(x, routing_map, probs, num_local_experts, num_permuted_tokens):
-+    """Shape-faithful stand-in for the HybridEP dispatch kernel on a fake process group.
-+
-+    Rows of ``x`` are recycled to fill the permuted-token budget and token counts
-+    are spread evenly over the local experts. The returned handle carries what
-+    ``_fake_combine`` and the backward pass need, plus the overflow flag that the
-+    dispatcher reads from the real handle.
-+    """
-+    num_tokens = x.shape[0]
-+    rows = num_permuted_tokens if num_permuted_tokens is not None else int(routing_map.sum().item())
-+    indices = torch.arange(rows, device=x.device).remainder(num_tokens)
-+    dispatched_hidden = x.index_select(0, indices)
-+    dispatched_probs = probs.new_zeros(rows)
-+    tokens_per_expert = torch.full(
-+        (num_local_experts,), rows // num_local_experts, dtype=torch.long, device=x.device
-+    )
-+    overflow_flag = torch.zeros((), dtype=torch.int32, device=x.device)
-+    handle = (indices, num_tokens, overflow_flag)
-+    return dispatched_hidden, dispatched_probs, tokens_per_expert, handle
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch.forward" data-hash="c454f17c47">
-@@ -375,6 +408,18 @@ HybridEPDispatch.forward
-         '''
-         Forward pass of fused dispatch of the HybridEP backend
-         '''
-+        ctx.fake = _is_fake_process_group(group)
-+        if ctx.fake:
-+            # The kernel needs real inter-rank transport. The stand-in carries no
-+            # types of its own; ``spmd_typecheck`` states the contract for both.
-+            with spmd.no_typecheck():
-+                dispatched_hidden, dispatched_probs, tokens_per_expert, handle = _fake_dispatch(
-+                    x, routing_map, probs, num_local_experts, num_permuted_tokens
-+                )
-+            ctx.handle = handle
-+            ctx.probs_shape = probs.shape
-+            return dispatched_hidden, dispatched_probs, None, tokens_per_expert, handle
-+
-         if fused or num_blocks_permute is not None or num_blocks_unpermute is not None:
-             import inspect
-             import warnings
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch.spmd_typecheck" data-hash="dbca75112b" data-render="added">
-@@ -440,6 +485,21 @@ HybridEPDispatch.forward
-             handle,
-         )
- 
-+    @staticmethod
-+    def spmd_typecheck(outputs, *, x, group):
-+        """Tokens are exchanged across ``group``, so every result varies along it.
-+
-+        The group folds expert and expert-tensor parallelism, which the
-+        type-checking mesh may keep as separate axes, so the claim is made on each
-+        mesh axis the group contains. Other axes keep the input's type.
-+        """
-+        dispatched_hidden, dispatched_probs, _, tokens_per_expert, handle = outputs
-+        group_axis = spmd.MeshAxis.of(group)
-+        varying = {axis: spmd.V for axis in spmd.current_mesh() if axis &lt;= group_axis}
-+        # The handle's last entry is this rank's overflow flag, which the dispatcher reads.
-+        for tensor in (dispatched_hidden, dispatched_probs, tokens_per_expert, handle[-1]):
-+            spmd.assert_local_type_like(tensor, x, varying)
-+
-     @staticmethod
-     def backward(ctx, grad_x, grad_probs, grad_scaling_factor, grad_tokens_per_expert, grad_handle):
-         '''
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPCombine.spmd_typecheck" data-hash="259ab9055e" data-render="added">
-@@ -493,6 +562,11 @@ HybridEPCombine.forward
-         ctx.fused = fused
-         return combined_hidden
- 
-+    @staticmethod
-+    def spmd_typecheck(output, *, x):
-+        """Tokens return to their owners; the axes they crossed already vary in ``x``."""
-+        spmd.assert_local_type_like(output, x)
-+
-     @staticmethod
-     def backward(ctx, grad_x):
-         '''
-</pre>
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dispatcher_state" data-hash="fcba4332b3" data-render="added">
-@@ -0,0 +182,11 @@ _annotate_dispatcher_state
-+
-+
-+def _annotate_dispatcher_state(dispatcher: MoEFlexTokenDispatcher) -&gt; None:
-+    """Type the per-rank overflow flag a HybridEP dispatcher accumulates across steps.
-+
-+    Each rank ORs its own dispatch overflow into this flag, so it varies
-+    everywhere. Paged stashing all-reduces it before acting on it.
-+    """
-+    over_budget = dispatcher.check_over_budget()
-+    if over_budget is not None:
-+        spmd.assert_type(over_budget, {"TP": spmd.V, "DP": spmd.V, "CP": spmd.V})
-</pre>
-</section>
-
-<section id="no-typecheck">
-<h2>Opting out with no_typecheck</h2>
-<!-- TODO: Some code runs tensor ops that are not model computation: building a fused module whose placeholder weights are thrown away, comparing host RNG state. no_typecheck hides them from the checker so it never has to type them; the contract each protects is stated elsewhere. -->
-<pre class="hunk" data-file="megatron/core/transformer/moe/experts.py" data-symbol="TEGroupedMLP._fused_forward" data-hash="c35676443a">
-@@ -979,7 +980,11 @@ TEGroupedMLP._fused_forward
-         # Note: The fused impl is stored in a tuple to avoid
-         # registering submodules.
-         if self._fused_ops is None:
--            self._fused_ops = (self._make_fused_ops(),)
-+            # Building the fused module is setup, not computation: it allocates
-+            # placeholder weights that are immediately replaced by this module's own
-+            # parameters, so it is excluded from SPMD type checking.
-+            with spmd.no_typecheck():
-+                self._fused_ops = (self._make_fused_ops(),)
-         (ops,) = self._fused_ops
- 
-         # Apply padding if needed
-</pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/random.py" data-symbol="CudaRNGStatesTracker.fork" data-hash="7bb7f004e7">
-@@ -315,8 +316,11 @@ CudaRNGStatesTracker.fork
-         try:
-             yield
-         finally:
--            # Throw a warning if cpu RNG state changed
--            if not torch.all(cpu_rng_state == torch.get_rng_state()).item():
-+            # Throw a warning if cpu RNG state changed. Comparing host RNG state is
-+            # bookkeeping rather than model computation, so it is not type-checked.
-+            with spmd.no_typecheck():
-+                cpu_rng_state_changed = not torch.all(cpu_rng_state == torch.get_rng_state()).item()
-+            if cpu_rng_state_changed:
-                 logging.getLogger(__name__).warning('CPU RNG state changed within GPU RNG context')
-             # Check if the current state name is the same as the desired state name.
-             if self._current_state_name != name:
-</pre>
-</section>
-
-<section id="meets-reality">
-<h2>Where the type system meets reality</h2>
-<!-- TODO: The escape hatches and the glue, in order: vocab bounds as typed scalars; force_eager so torch.compile does not hide ops; contracts bolted onto Transformer Engine by name; two identity-on-output contracts where the generic local rule would be wrong. -->
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_vocab_bounds" data-hash="0271fe7d6e" data-render="added">
-@@ -0,0 +169,13 @@ _annotate_vocab_bounds
-+
-+
-+def _annotate_vocab_bounds(module: VocabParallelEmbedding) -&gt; None:
-+    """Type the per-rank vocabulary bounds that the embedding masks against.
-+
-+    They are Python ints, so ordinary propagation cannot see that comparing
-+    token ids against them produces rank-varying results. Wrapping them as
-+    typed scalars makes the variation visible at its source; outside a
-+    type-checking run a ``Scalar`` behaves as its plain value.
-+    """
-+    bound_type = {"TP": spmd.V, "DP": spmd.R, "CP": spmd.R}
-+    module.vocab_start_index = spmd.Scalar(module.vocab_start_index, bound_type)
-+    module.vocab_end_index = spmd.Scalar(module.vocab_end_index, bound_type)
-</pre>
-<pre class="hunk" data-file="megatron/core/spmd/checker.py" data-symbol="typecheck" data-hash="000148b95b" data-render="added">
-@@ -0,0 +13,13 @@ typecheck
-+
-+
-+@contextmanager
-+def typecheck(strict_mode: Literal["permissive", "strict"] = "strict") -&gt; Iterator[None]:
-+    """Type-check one Megatron execution without changing normal execution."""
-+    mesh = model_parallel_mesh()
-+    with (
-+        _typecheck(strict_mode=strict_mode),
-+        spmd.set_current_mesh(mesh),
-+        # Keep pre-decorated torch.compile functions visible to the type checker.
-+        torch.compiler.set_stance("force_eager"),
-+    ):
-+        yield
-</pre>
+<!-- TODO: Transformer Engine's linear functions get the same contracts bolted on by name; the two loss auto-scalers are identity-on-output contracts where the generic local rule would be wrong. -->
 <pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="&lt;module&gt;" data-hash="a43863d06d" data-lines="10-16,397-405,668-674">
 @@ -10,6 +10,7 @@
  from contextlib import nullcontext
@@ -1185,11 +655,541 @@ TODO: switch DSv3 to global spmd types
      def backward(ctx, grad_output: torch.Tensor) -&gt; Tuple[torch.Tensor, torch.Tensor]:
          """Compute and scale the gradient for auxiliary loss..
 </pre>
+<!-- TODO: Purely local kernels never communicate; register_local_autograd_function gives them the generic local rule instead of a hand-written contract. -->
+<h3>Local functions</h3>
+<pre class="hunk" data-file="megatron/core/fusions/fused_bias_swiglu.py" data-symbol="SwiGLUFunction" data-hash="ce876e4785">
+@@ -144,6 +145,7 @@ BiasSwiGLUFunction.backward
+         return tmp, tmp, None, None
+ 
+ 
++@spmd.register_local_autograd_function
+ class SwiGLUFunction(torch.autograd.Function):
+     """Custom autograd function for SwiGLU activation without bias."""
+ 
+</pre>
+<pre class="hunk" data-file="megatron/core/fusions/fused_mla_yarn_rope_apply.py" data-symbol="ApplyMLARotaryEmbQ" data-hash="ce876e4785">
+@@ -207,6 +208,7 @@ rotary_bwd_q_kernel
+     tl.store(DO + x_2_off, x_2, mask=mask)
+ 
+ 
++@spmd.register_local_autograd_function
+ class ApplyMLARotaryEmbQ(torch.autograd.Function):
+     """
+     Autograd function for applying YARN RoPE to MLA's query.
+</pre>
+</section>
+
+<section id="who-declares-what">
+<h2>Parameter conventions</h2>
+<!-- TODO: The model asserts only the axis it shards (TP, read off Megatron's parameter attributes). DDP asserts R on every mesh axis inside its dp_cp reduction group, because its backward collective is what makes that promise true; the mesh keeps DP and CP separate, so the promise is folded onto each. Tensors with no gradient are the model's alone to type. The vocab bounds are Python ints typed as scalars. annotate_model ties it together. DDP's own gradient accumulation and reduction are bookkeeping, not model computation, so they run under no_typecheck. -->
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dense_parameter" data-hash="39641952d1" data-render="added">
+@@ -0,0 +76,11 @@ _annotate_dense_parameter
++
++
++def _annotate_dense_parameter(tensor: torch.Tensor) -&gt; None:
++    """Annotate a trainable parameter on the axis the model shards it over.
++
++    Only TP is the model's to declare. Whether the parameter is replicated across
++    data parallelism, and that its gradient gets summed there, is a promise made
++    by whichever wrapper performs that reduction (see
++    ``DistributedDataParallel``), so it is left for that wrapper to assert.
++    """
++    spmd.assert_type(tensor, {"TP": _tensor_parallel_type(tensor)})
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_tensor_parallel_type" data-hash="6ffc16d35a" data-render="added">
+@@ -0,0 +20,26 @@ _tensor_parallel_type
++
++
++def _tensor_parallel_type(tensor: torch.Tensor) -&gt; spmd.SpmdType:
++    """Infer a parameter's TP type from Megatron's distribution metadata.
++
++    ``megatron.core.tensor_parallel.layers.set_tensor_model_parallel_attributes``
++    marks physically sharded parameters with ``tensor_model_parallel`` and records
++    their global shard dimension in ``partition_dim``. Column-parallel weights use
++    dimension 0, while row-parallel weights use dimension 1.
++
++    ``sequence_parallel`` means something different when attached to a
++    parameter: the parameter value is replicated, but each TP rank accumulates
++    a gradient from its local sequence shard. The
++    ``_allreduce_non_tensor_model_parallel_grads`` helper in
++    ``megatron.core.distributed.finalize_model_grads`` reads this attribute and
++    sums those partial gradients across TP, which is exactly the R (replicated
++    value, partial gradient) contract.
++
++    Other trainable parameters are invariant across TP. Non-trainable tensors
++    are treated as replicated because only their forward value matters.
++    """
++    if getattr(tensor, "tensor_model_parallel", False):
++        return spmd.S(getattr(tensor, "partition_dim"))
++    if getattr(tensor, "sequence_parallel", False):
++        return spmd.R
++    return spmd.I if tensor.requires_grad else spmd.R
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="model_parallel_mesh" data-hash="5209209e9e" data-render="added">
+@@ -0,0 +87,15 @@ model_parallel_mesh
++
++
++def model_parallel_mesh() -&gt; dict[str, spmd.MeshAxis]:
++    """Return the mesh Megatron's dense layers are typed against.
++
++    Megatron does not build a DeviceMesh; it hands out process groups from
++    ``parallel_state``. The three that matter for typing dense computation are
++    tensor parallel, data parallel (without context parallel folded in), and
++    context parallel.
++    """
++    return {
++        "TP": spmd.MeshAxis.of(parallel_state.get_tensor_model_parallel_group()),
++        "DP": spmd.MeshAxis.of(parallel_state.get_data_parallel_group(with_context_parallel=False)),
++        "CP": spmd.MeshAxis.of(parallel_state.get_context_parallel_group()),
++    }
+</pre>
+<h3>Handling FSDP</h3>
+<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.forward" data-hash="61badae4d8" data-render="added">
+@@ -357,3 +358,8 @@ DistributedDataParallel.__init__
+             self.enable_forward_pre_hook()
+         self.overlap_param_gather_with_optimizer_step = False
+ 
++    def forward(self, *inputs, **kwargs):
++        """Calls the wrapped module's forward() method."""
++        if spmd.is_type_checking():
++            self._assert_parameters_replicated()
++        return super().forward(*inputs, **kwargs)
+</pre>
+<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel._assert_parameters_replicated" data-hash="2ceede36d8" data-render="added">
+@@ -360,3 +366,27 @@ DistributedDataParallel
++
++    def _assert_parameters_replicated(self):
++        """Promise, on the type-checking mesh, that this wrapper reduces the gradients.
++
++        A parameter whose gradient is summed here is replicated (R) along the
++        axes of the reduction group: identical value on every rank, partial
++        gradient. The model only knows how its parameters are sharded and leaves
++        these axes to whichever wrapper performs the reduction.
++
++        The dense reduction group folds data and context parallelism together,
++        while the type-checking mesh may keep them as separate axes, so the
++        promise is made on each mesh axis the group contains. Expert parameters
++        are typed on the expert mesh, where their reduction group is an axis.
++        """
++        mesh = spmd.current_mesh()
++        dense_reduction_axis = spmd.MeshAxis.of(self.dp_cp_group)
++        for param in self.params_with_grad:
++            if getattr(param, 'allreduce', True):
++                for axis in mesh:
++                    if axis &lt;= dense_reduction_axis:
++                        spmd.assert_type(param, {axis: spmd.R})
++            else:
++                spmd.assert_type(param, {self.expt_dp_group: spmd.R})
++
+     def enable_forward_pre_hook(self):
+         """
+         Enable forward pre-hooks needed for param all-gather overlap with forward compute.
+</pre>
+<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel._make_backward_post_hook.hook" data-hash="e837028bb2">
+@@ -433,12 +463,16 @@ DistributedDataParallel._make_backward_post_hook.hook
+             if is_graph_capturing():
+                 return
+ 
+-            if param in self.param_to_bucket_group:
+-                assert param.requires_grad
+-                if self.ddp_config.overlap_grad_reduce:
+-                    assert (
+-                        param.grad is not None
+-                    ), 'param.grad being None is not safe when overlap_grad_reduce is True'
++            if param not in self.param_to_bucket_group:
++                return
++            assert param.requires_grad
++            if self.ddp_config.overlap_grad_reduce:
++                assert (
++                    param.grad is not None
++                ), 'param.grad being None is not safe when overlap_grad_reduce is True'
++            # Gradient accumulation and reduction are this wrapper's own bookkeeping,
++            # not model computation, so they are not type-checked.
++            with spmd.no_typecheck():
+                 if param.grad is not None and (
+                     not param.grad_added_to_main_grad or getattr(param, 'zero_out_wgrad', False)
+                 ):
+</pre>
+<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.start_grad_sync" data-hash="ca273d7a48">
+@@ -532,8 +566,9 @@ DistributedDataParallel.start_grad_sync
+         calls. When overlap_grad_reduce is set to False, calls synchronous
+         communication ops.
+         """
+-        for bucket_group in self.bucket_groups + self.expert_parallel_bucket_groups:
+-            bucket_group.start_grad_sync()
++        with spmd.no_typecheck():
++            for bucket_group in self.bucket_groups + self.expert_parallel_bucket_groups:
++                bucket_group.start_grad_sync()
+ 
+     def finish_grad_sync(self, force_all_reduce: Optional[bool] = False):
+         """
+</pre>
+<h3>Tying it together</h3>
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="annotate_tensor" data-hash="00397e5052" data-render="added">
+@@ -0,0 +63,13 @@ annotate_tensor
++
++
++def annotate_tensor(
++    tensor: torch.Tensor, *, tensor_parallel_type: spmd.SpmdType | None = None
++) -&gt; None:
++    """Annotate a tensor that has no gradient to reduce: a buffer or frozen parameter.
++
++    Such a tensor is simply replicated on every axis the model does not shard.
++    """
++    spmd.assert_type(
++        tensor,
++        {"TP": tensor_parallel_type or _tensor_parallel_type(tensor), "DP": spmd.R, "CP": spmd.R},
++    )
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_vocab_bounds" data-hash="0271fe7d6e" data-render="added">
+@@ -0,0 +169,13 @@ _annotate_vocab_bounds
++
++
++def _annotate_vocab_bounds(module: VocabParallelEmbedding) -&gt; None:
++    """Type the per-rank vocabulary bounds that the embedding masks against.
++
++    They are Python ints, so ordinary propagation cannot see that comparing
++    token ids against them produces rank-varying results. Wrapping them as
++    typed scalars makes the variation visible at its source; outside a
++    type-checking run a ``Scalar`` behaves as its plain value.
++    """
++    bound_type = {"TP": spmd.V, "DP": spmd.R, "CP": spmd.R}
++    module.vocab_start_index = spmd.Scalar(module.vocab_start_index, bound_type)
++    module.vocab_end_index = spmd.Scalar(module.vocab_end_index, bound_type)
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="annotate_model" data-hash="c568c6eba7" data-render="added">
+@@ -0,0 +193,34 @@ annotate_model
++
++
++def annotate_model(model: nn.Module) -&gt; None:
++    """Annotate model-owned tensors, and the few typed scalars, from Megatron's conventions.
++
++    The model declares what it knows: how each tensor is sharded. The
++    data-parallel axis of a trainable parameter is declared by the wrapper that
++    reduces its gradient, so ``model`` should already be wrapped in
++    ``DistributedDataParallel``; a bare model leaves that axis untyped and strict
++    checking will say so at the first use.
++    """
++    for module in model.modules():
++        if isinstance(module, VocabParallelEmbedding):
++            _annotate_vocab_bounds(module)
++        # Token dispatchers are plain objects owned by the MoE layer, not submodules.
++        dispatcher = getattr(module, "token_dispatcher", None)
++        if isinstance(dispatcher, MoEFlexTokenDispatcher):
++            _annotate_dispatcher_state(dispatcher)
++        for tensor in module.parameters(recurse=False):
++            if not tensor.requires_grad:
++                annotate_tensor(tensor)
++            elif _is_expert_parallel_parameter(tensor):
++                _annotate_expert_parameter(tensor)
++            else:
++                _annotate_dense_parameter(tensor)
++        # DistributedDataParallel shadows ``buffers`` with its list of gradient
++        # buffers, so call the nn.Module method explicitly.
++        for tensor in nn.Module.buffers(module, recurse=False):
++            annotate_tensor(tensor)
++        # A few production modules, including YarnRotaryEmbedding, own replicated
++        # constant tensors without registering them as buffers.
++        for value in vars(module).values():
++            if isinstance(value, torch.Tensor) and not value.requires_grad:
++                annotate_tensor(value, tensor_parallel_type=spmd.R)
+</pre>
+</section>
+
+<section id="two-meshes">
+<h2>Expert parallelism</h2>
+<!-- TODO: ETP x EDP x EP tiles the same ranks as TP x DP x CP but cuts them differently. Expert computation runs inside expert_parallel_region and is retagged, not moved, on the way out. Expert parameters are V on EP and sharded on ETP; EDP replication is again the reducer's promise. HybridEP dispatch folds EP and ETP the way DDP folds DP and CP. -->
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="expert_parallel_mesh" data-hash="98a1cb529f" data-render="added">
+@@ -0,0 +102,16 @@ expert_parallel_mesh
++
++
++def expert_parallel_mesh() -&gt; dict[str, spmd.MeshAxis]:
++    """Return the expert factorization of the same ranks as ``model_parallel_mesh``.
++
++    Megatron routes MoE experts with a separate set of process groups: experts
++    are distributed over EP, each expert's weights are optionally sharded over
++    ETP, and the remaining ranks (EDP) hold replicas. These groups tile the
++    same ranks as TP x DP x CP but cut them differently, so tensors crossing
++    between the two regions must be explicitly reinterpreted.
++    """
++    return {
++        "ETP": spmd.MeshAxis.of(parallel_state.get_expert_tensor_parallel_group()),
++        "EDP": spmd.MeshAxis.of(parallel_state.get_expert_data_parallel_group()),
++        "EP": spmd.MeshAxis.of(parallel_state.get_expert_model_parallel_group()),
++    }
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="expert_parallel_region" data-hash="b73784590f" data-render="added">
+@@ -0,0 +146,11 @@ expert_parallel_region
++
++
++@contextmanager
++def expert_parallel_region() -&gt; Iterator[None]:
++    """Type-check the enclosed expert computation on the ETP x EDP x EP mesh.
++
++    Tensors produced inside the region carry expert-mesh types. Pass any that
++    flow back out through ``leave_expert_parallel_region``.
++    """
++    with spmd.set_current_mesh(expert_parallel_mesh()):
++        yield
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="leave_expert_parallel_region" data-hash="7000f553ce" data-render="added">
+@@ -0,0 +157,12 @@ leave_expert_parallel_region
++
++
++def leave_expert_parallel_region(tensor: torch.Tensor) -&gt; torch.Tensor:
++    """Re-express an ``expert_parallel_region`` result on the enclosing mesh.
++
++    Call this after the ``with`` block has exited, so the enclosing mesh is
++    current again. Both meshes cover the same ranks, so this only retags the
++    tensor; no data moves.
++    """
++    if not spmd.is_type_checking():
++        return tensor
++    return spmd.reinterpret_mesh(tensor, spmd.current_mesh())
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/moe_layer.py" data-symbol="MoELayer.routed_experts_compute" data-hash="aa40fce594">
+@@ -549,18 +550,20 @@ MoELayer.routed_experts_compute
+             self.token_dispatcher.dispatch_postprocess(hidden_states, probs)
+         )
+         dispatched_input = self._maybe_record_overload_factor(dispatched_input, tokens_per_expert)
+-        if (
+-            hasattr(self, "_inference_token_dispatcher")
+-            and self.is_inference_cuda_graphed_iteration
+-        ):
+-            routing_map = self.token_dispatcher.routing_map
+-            expert_output, mlp_bias = apply_module(self.experts)(
+-                dispatched_input, tokens_per_expert, permuted_probs, routing_map=routing_map
+-            )
+-        else:
+-            expert_output, mlp_bias = apply_module(self.experts)(
+-                dispatched_input, tokens_per_expert, permuted_probs
+-            )
++        with expert_parallel_region():
++            if (
++                hasattr(self, "_inference_token_dispatcher")
++                and self.is_inference_cuda_graphed_iteration
++            ):
++                routing_map = self.token_dispatcher.routing_map
++                expert_output, mlp_bias = apply_module(self.experts)(
++                    dispatched_input, tokens_per_expert, permuted_probs, routing_map=routing_map
++                )
++            else:
++                expert_output, mlp_bias = apply_module(self.experts)(
++                    dispatched_input, tokens_per_expert, permuted_probs
++                )
++        expert_output = leave_expert_parallel_region(expert_output)
+         assert mlp_bias is None, f"mlp_bias is not supported for {type(self.token_dispatcher)}"
+         output = self.token_dispatcher.combine_preprocess(expert_output)
+ 
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_is_expert_parallel_parameter" data-hash="451fffc44a" data-render="added">
+@@ -0,0 +118,12 @@ _is_expert_parallel_parameter
++
++
++def _is_expert_parallel_parameter(tensor: torch.Tensor) -&gt; bool:
++    """Whether Megatron reduces this parameter's gradient over EDP rather than DP.
++
++    Megatron has no positive marker for this. Expert modules clear the
++    ``allreduce`` attribute when expert parallelism is on, meaning "do not
++    all-reduce this gradient over the regular data-parallel group", and
++    ``DistributedDataParallel``, the optimizer, and Megatron-FSDP all recover
++    expert-parallel membership from it with this same expression.
++    """
++    return not getattr(tensor, "allreduce", True)
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_expert_tensor_parallel_type" data-hash="fece217d5f" data-render="added">
+@@ -0,0 +46,17 @@ _expert_tensor_parallel_type
++
++
++def _expert_tensor_parallel_type(tensor: torch.Tensor) -&gt; spmd.SpmdType:
++    """Infer an expert parameter's type on the expert tensor-parallel axis.
++
++    This follows the same conventions as ``_tensor_parallel_type`` with one
++    exception: ``TEGroupedLinear`` in
++    ``megatron.core.extensions.transformer_engine`` deliberately stamps
++    ``partition_dim`` on expert weights *without* setting
++    ``tensor_model_parallel`` (which would change Megatron's num-zeros gradient
++    accounting), so here the presence of ``partition_dim`` alone marks a shard.
++    """
++    if getattr(tensor, "tensor_model_parallel", False) or hasattr(tensor, "partition_dim"):
++        return spmd.S(getattr(tensor, "partition_dim"))
++    if getattr(tensor, "sequence_parallel", False):
++        return spmd.R
++    return spmd.I if tensor.requires_grad else spmd.R
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_expert_parameter" data-hash="b58e080cc2" data-render="added">
+@@ -0,0 +130,16 @@ _annotate_expert_parameter
++
++
++def _annotate_expert_parameter(tensor: torch.Tensor) -&gt; None:
++    """Annotate an expert parameter on the axes the model shards it over.
++
++    Each EP rank owns different experts, so on the EP axis the parameter is
++    varying; within one expert the weight may be sharded over ETP. Replication
++    over EDP is, as for dense parameters, the gradient reducer's promise.
++    """
++    spmd.assert_type(
++        tensor,
++        {
++            parallel_state.get_expert_tensor_parallel_group(): _expert_tensor_parallel_type(tensor),
++            parallel_state.get_expert_model_parallel_group(): spmd.V,
++        },
++    )
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_fake_dispatch" data-hash="fd6c905494" data-render="added">
+@@ -352,0 +357,21 @@ _fake_dispatch
++
++
++def _fake_dispatch(x, routing_map, probs, num_local_experts, num_permuted_tokens):
++    """Shape-faithful stand-in for the HybridEP dispatch kernel on a fake process group.
++
++    Rows of ``x`` are recycled to fill the permuted-token budget and token counts
++    are spread evenly over the local experts. The returned handle carries what
++    ``_fake_combine`` and the backward pass need, plus the overflow flag that the
++    dispatcher reads from the real handle.
++    """
++    num_tokens = x.shape[0]
++    rows = num_permuted_tokens if num_permuted_tokens is not None else int(routing_map.sum().item())
++    indices = torch.arange(rows, device=x.device).remainder(num_tokens)
++    dispatched_hidden = x.index_select(0, indices)
++    dispatched_probs = probs.new_zeros(rows)
++    tokens_per_expert = torch.full(
++        (num_local_experts,), rows // num_local_experts, dtype=torch.long, device=x.device
++    )
++    overflow_flag = torch.zeros((), dtype=torch.int32, device=x.device)
++    handle = (indices, num_tokens, overflow_flag)
++    return dispatched_hidden, dispatched_probs, tokens_per_expert, handle
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch.forward" data-hash="c454f17c47">
+@@ -375,6 +408,18 @@ HybridEPDispatch.forward
+         '''
+         Forward pass of fused dispatch of the HybridEP backend
+         '''
++        ctx.fake = _is_fake_process_group(group)
++        if ctx.fake:
++            # The kernel needs real inter-rank transport. The stand-in carries no
++            # types of its own; ``spmd_typecheck`` states the contract for both.
++            with spmd.no_typecheck():
++                dispatched_hidden, dispatched_probs, tokens_per_expert, handle = _fake_dispatch(
++                    x, routing_map, probs, num_local_experts, num_permuted_tokens
++                )
++            ctx.handle = handle
++            ctx.probs_shape = probs.shape
++            return dispatched_hidden, dispatched_probs, None, tokens_per_expert, handle
++
+         if fused or num_blocks_permute is not None or num_blocks_unpermute is not None:
+             import inspect
+             import warnings
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch.spmd_typecheck" data-hash="dbca75112b" data-render="added">
+@@ -440,6 +485,21 @@ HybridEPDispatch.forward
+             handle,
+         )
+ 
++    @staticmethod
++    def spmd_typecheck(outputs, *, x, group):
++        """Tokens are exchanged across ``group``, so every result varies along it.
++
++        The group folds expert and expert-tensor parallelism, which the
++        type-checking mesh may keep as separate axes, so the claim is made on each
++        mesh axis the group contains. Other axes keep the input's type.
++        """
++        dispatched_hidden, dispatched_probs, _, tokens_per_expert, handle = outputs
++        group_axis = spmd.MeshAxis.of(group)
++        varying = {axis: spmd.V for axis in spmd.current_mesh() if axis &lt;= group_axis}
++        # The handle's last entry is this rank's overflow flag, which the dispatcher reads.
++        for tensor in (dispatched_hidden, dispatched_probs, tokens_per_expert, handle[-1]):
++            spmd.assert_local_type_like(tensor, x, varying)
++
+     @staticmethod
+     def backward(ctx, grad_x, grad_probs, grad_scaling_factor, grad_tokens_per_expert, grad_handle):
+         '''
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPCombine.spmd_typecheck" data-hash="259ab9055e" data-render="added">
+@@ -493,6 +562,11 @@ HybridEPCombine.forward
+         ctx.fused = fused
+         return combined_hidden
+ 
++    @staticmethod
++    def spmd_typecheck(output, *, x):
++        """Tokens return to their owners; the axes they crossed already vary in ``x``."""
++        spmd.assert_local_type_like(output, x)
++
+     @staticmethod
+     def backward(ctx, grad_x):
+         '''
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dispatcher_state" data-hash="fcba4332b3" data-render="added">
+@@ -0,0 +182,11 @@ _annotate_dispatcher_state
++
++
++def _annotate_dispatcher_state(dispatcher: MoEFlexTokenDispatcher) -&gt; None:
++    """Type the per-rank overflow flag a HybridEP dispatcher accumulates across steps.
++
++    Each rank ORs its own dispatch overflow into this flag, so it varies
++    everywhere. Paged stashing all-reduces it before acting on it.
++    """
++    over_budget = dispatcher.check_over_budget()
++    if over_budget is not None:
++        spmd.assert_type(over_budget, {"TP": spmd.V, "DP": spmd.V, "CP": spmd.V})
+</pre>
+</section>
+
+<section id="no-typecheck">
+<h2>Opting out with no_typecheck</h2>
+<!-- TODO: Some code runs tensor ops that are not model computation: building a fused module whose placeholder weights are thrown away, comparing host RNG state. no_typecheck hides them from the checker so it never has to type them; the contract each protects is stated elsewhere. -->
+<pre class="hunk" data-file="megatron/core/transformer/moe/experts.py" data-symbol="TEGroupedMLP._fused_forward" data-hash="c35676443a">
+@@ -979,7 +980,11 @@ TEGroupedMLP._fused_forward
+         # Note: The fused impl is stored in a tuple to avoid
+         # registering submodules.
+         if self._fused_ops is None:
+-            self._fused_ops = (self._make_fused_ops(),)
++            # Building the fused module is setup, not computation: it allocates
++            # placeholder weights that are immediately replaced by this module's own
++            # parameters, so it is excluded from SPMD type checking.
++            with spmd.no_typecheck():
++                self._fused_ops = (self._make_fused_ops(),)
+         (ops,) = self._fused_ops
+ 
+         # Apply padding if needed
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/random.py" data-symbol="CudaRNGStatesTracker.fork" data-hash="7bb7f004e7">
+@@ -315,8 +316,11 @@ CudaRNGStatesTracker.fork
+         try:
+             yield
+         finally:
+-            # Throw a warning if cpu RNG state changed
+-            if not torch.all(cpu_rng_state == torch.get_rng_state()).item():
++            # Throw a warning if cpu RNG state changed. Comparing host RNG state is
++            # bookkeeping rather than model computation, so it is not type-checked.
++            with spmd.no_typecheck():
++                cpu_rng_state_changed = not torch.all(cpu_rng_state == torch.get_rng_state()).item()
++            if cpu_rng_state_changed:
+                 logging.getLogger(__name__).warning('CPU RNG state changed within GPU RNG context')
+             # Check if the current state name is the same as the desired state name.
+             if self._current_state_name != name:
+</pre>
 </section>
 
 <section id="one-gpu">
 <h2>Checking a 256-GPU job on one GPU</h2>
-<!-- TODO: PyTorch's fake process-group backend impersonates one rank of the MLPerf DeepSeek-V3 job. First the trick and the three small unit tests that use it directly; then the fake HybridEP transport that lets the real dispatcher run without NVSHMEM; then the job itself: config, model, DDP wrap, and the two pipeline chunks that cover every layer structure. -->
+<!-- TODO: typecheck() sets the mesh and forces eager so torch.compile does not hide ops. PyTorch's fake process-group backend impersonates one rank of the MLPerf DeepSeek-V3 job. First the trick and the three small unit tests that use it directly; then the fake HybridEP transport that lets the real dispatcher run without NVSHMEM; then the job itself: config, model, DDP wrap, and the two pipeline chunks that cover every layer structure. -->
+<pre class="hunk" data-file="megatron/core/spmd/checker.py" data-symbol="typecheck" data-hash="000148b95b" data-render="added">
+@@ -0,0 +13,13 @@ typecheck
++
++
++@contextmanager
++def typecheck(strict_mode: Literal["permissive", "strict"] = "strict") -&gt; Iterator[None]:
++    """Type-check one Megatron execution without changing normal execution."""
++    mesh = model_parallel_mesh()
++    with (
++        _typecheck(strict_mode=strict_mode),
++        spmd.set_current_mesh(mesh),
++        # Keep pre-decorated torch.compile functions visible to the type checker.
++        torch.compiler.set_stance("force_eager"),
++    ):
++        yield
+</pre>
 <pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="_fake_distributed" data-hash="1c1edca18a" data-render="added">
 @@ -0,0 +204,23 @@ _fake_distributed
 +

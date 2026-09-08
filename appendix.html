@@ -16,6 +16,7 @@
 <!-- Hunks that repeat a pattern already shown in index.html. Same section headings; link to one with appendix.html#file::symbol -->
 <section id="definition-sites">
 <h2>Annotating custom autograd functions</h2>
+<h3>Declaring a contract with spmd_typecheck</h3>
 <pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_GatherFromModelParallelRegion.spmd_typecheck" data-hash="44f9a73e16" data-render="added">
 @@ -267,6 +289,12 @@ _GatherFromModelParallelRegion.forward
          ctx.group = group
@@ -134,6 +135,38 @@
      @custom_bwd
      def backward(ctx, grad_output):
 </pre>
+<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="_named_non_tensor_args" data-hash="54f01c0848" data-render="added">
+@@ -666,0 +675,10 @@ _named_non_tensor_args
++
++    def _named_non_tensor_args(unpacker, values):
++        """Name a tuple immediately unpacked into a function's first locals."""
++        first_local = len(inspect.signature(unpacker).parameters)
++        names = unpacker.__code__.co_varnames[first_local : first_local + len(values)]
++        if len(names) != len(values):
++            raise NotImplementedError(
++                f"Could not identify all non-tensor arguments for {unpacker.__qualname__}"
++            )
++        return dict(zip(names, values))
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/multi_token_prediction.py" data-symbol="MTPLossAutoScaler.spmd_typecheck" data-hash="55781a629a" data-render="added">
+@@ -582,6 +583,15 @@ MTPLossAutoScaler.forward
+         ctx.save_for_backward(mtp_loss)
+         return output
+ 
++    @staticmethod
++    def spmd_typecheck(result, *, output):
++        """The forward is the identity on ``output``.
++
++        ``mtp_loss`` only contributes a gradient in backward, so it must not
++        influence the result's type; the generic local rule would let it.
++        """
++        spmd.assert_type_like(result, output)
++
+     @staticmethod
+     def backward(ctx, grad_output: torch.Tensor):
+         """Compute and scale the gradient for mtp loss..
+</pre>
+<h3>Local functions</h3>
 <pre class="hunk" data-file="megatron/core/fusions/fused_mla_yarn_rope_apply.py" data-symbol="ApplyMLARotaryEmbKV" data-hash="ce876e4785">
 @@ -578,6 +580,7 @@ rotary_bwd_kv_kernel
          tl.store(dEMB_ptr + tl.arange(0, emb_dim // 2) * 2 + 1, x_2)
@@ -167,7 +200,8 @@
 </section>
 
 <section id="who-declares-what">
-<h2>Handling FSDP</h2>
+<h2>Parameter conventions</h2>
+<h3>Handling FSDP</h3>
 <pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.finish_grad_sync" data-hash="eec13b8de0">
 @@ -544,8 +579,9 @@ DistributedDataParallel.finish_grad_sync
          calls to complete. When overlap_grad_reduce is set to False, calls synchronous
@@ -181,41 +215,6 @@
  
      def free_overlap_buffers(self):
          """Free overlap param-gather GPU buffers across all bucket groups."""
-</pre>
-</section>
-
-<section id="meets-reality">
-<h2>Where the type system meets reality</h2>
-<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="_named_non_tensor_args" data-hash="54f01c0848" data-render="added">
-@@ -666,0 +675,10 @@ _named_non_tensor_args
-+
-+    def _named_non_tensor_args(unpacker, values):
-+        """Name a tuple immediately unpacked into a function's first locals."""
-+        first_local = len(inspect.signature(unpacker).parameters)
-+        names = unpacker.__code__.co_varnames[first_local : first_local + len(values)]
-+        if len(names) != len(values):
-+            raise NotImplementedError(
-+                f"Could not identify all non-tensor arguments for {unpacker.__qualname__}"
-+            )
-+        return dict(zip(names, values))
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/multi_token_prediction.py" data-symbol="MTPLossAutoScaler.spmd_typecheck" data-hash="55781a629a" data-render="added">
-@@ -582,6 +583,15 @@ MTPLossAutoScaler.forward
-         ctx.save_for_backward(mtp_loss)
-         return output
- 
-+    @staticmethod
-+    def spmd_typecheck(result, *, output):
-+        """The forward is the identity on ``output``.
-+
-+        ``mtp_loss`` only contributes a gradient in backward, so it must not
-+        influence the result's type; the generic local rule would let it.
-+        """
-+        spmd.assert_type_like(result, output)
-+
-     @staticmethod
-     def backward(ctx, grad_output: torch.Tensor):
-         """Compute and scale the gradient for mtp loss..
 </pre>
 </section>
 

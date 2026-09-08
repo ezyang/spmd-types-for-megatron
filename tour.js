@@ -49,9 +49,8 @@
     return e;
   }
 
-  function render(pre, box, grouped) {
+  function render(pre, box, grouped, mode) {
     var file = pre.getAttribute('data-file') || '', symbol = pre.getAttribute('data-symbol') || '';
-    var mode = pre.getAttribute('data-render') || 'diff';
     var only = lineSet(pre.getAttribute('data-lines'));
     var collapse = pre.hasAttribute('data-collapse');
     var rows = parse(pre.textContent);
@@ -210,7 +209,11 @@
       var j = i;
       while (j + 1 < pres.length && adjacent(pres[j], pres[j + 1])) j++;
       var box = null, grouped = j > i;
-      for (var k = i; k <= j; k++) box = render(pres[k], box, grouped);
+      // Grouped hunks share one box, so they must share one gutter layout: if
+      // any member is a diff hunk, render the whole group in diff mode.
+      var mode = 'added';
+      for (var k = i; k <= j; k++) if ((pres[k].getAttribute('data-render') || 'diff') === 'diff') mode = 'diff';
+      for (var k = i; k <= j; k++) box = render(pres[k], box, grouped, mode);
       i = j + 1;
     }
   }

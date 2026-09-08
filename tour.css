@@ -1,5 +1,5 @@
 body { max-width: 60em; margin: 2em auto; padding: 0 1em; font: 16px/1.5 Georgia, serif; color: #222; }
-section[id] { scroll-margin-top: 1em; }
+section[id], h3[id] { scroll-margin-top: 1em; }
 .tour, .tour-hunk { scroll-margin-top: 1em; }
 .toc { display: none; position: fixed; top: 2em; left: 1em; width: 22em; max-height: calc(100vh - 3em); overflow-y: auto; font: 13px/1.4 Helvetica, Arial, sans-serif; }
 .toc ul { list-style: none; margin: 0; padding: 0; border-left: 2px solid #eee; }

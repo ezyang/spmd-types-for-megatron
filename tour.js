@@ -246,7 +246,8 @@
     var titleOf = {};
 
     Array.prototype.forEach.call(heads, function (h) {
-      var target = h.closest('section[id]') || h;
+      // h2 links to its section; a subsection heading is its own target.
+      var target = (h.tagName === 'H2' && h.closest('section[id]')) || h;
       if (!target.id) {
         var id = slug(h.textContent), n = 1;
         while (document.getElementById(id)) id = slug(h.textContent) + '-' + (++n);

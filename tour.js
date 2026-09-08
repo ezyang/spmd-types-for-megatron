@@ -272,7 +272,6 @@
       nav.appendChild(topA);
     }
 
-    var titleOf = {};
     Array.prototype.forEach.call(heads, function (h) {
       // h2 links to its section; a subsection heading is its own target.
       var target = (h.tagName === 'H2' && h.closest('section[id]')) || h;
@@ -281,7 +280,6 @@
         while (document.getElementById(id)) id = slug(h.textContent) + '-' + (++n);
         target.id = id;
       }
-      titleOf[target.id] = h.textContent;
       var li = el('li', 'toc-' + h.tagName.toLowerCase()), a = el('a', null, h.textContent);
       a.href = '#' + target.id;
       li.appendChild(a);
@@ -298,18 +296,16 @@
       return pre.closest('section[id]');
     }
 
-    // Per file: which distinct hunks (by data-hash) appear under which heading.
-    // Appendix hunks are not counted, so they never make a file "partial".
-    var hunksOf = {}, sectionsOf = {};
+    // Per file: the first hunk that appears under each heading. Appendix hunks
+    // stay out of the sidebar.
+    var sectionsOf = {};
     Array.prototype.forEach.call(document.querySelectorAll('pre.hunk'), function (pre) {
       if (pre.closest('details.appendix')) return;
-      var file = pre.getAttribute('data-file'), key = pre.getAttribute('data-hash') || pre.getAttribute('data-symbol');
+      var file = pre.getAttribute('data-file');
       var sec = headingOf(pre);
       if (!file || !sec) return;
-      (hunksOf[file] = hunksOf[file] || {})[key] = true;
       var s = sectionsOf[file] = sectionsOf[file] || {};
-      s[sec.id] = s[sec.id] || { hunks: {}, first: pre };
-      s[sec.id].hunks[key] = true;
+      s[sec.id] = s[sec.id] || pre;
     });
 
     items.forEach(function (it) {
@@ -317,24 +313,14 @@
       if (!files.length) return;
       var ul = el('ul', 'toc-files');
       files.forEach(function (f) {
-        var here = Object.keys(sectionsOf[f][it.target.id].hunks).length, total = Object.keys(hunksOf[f]).length;
         var li = el('li'), a = el('a', 'toc-file');
         var parts = f.split('/');
         a.appendChild(el('span', 'dir', parts.length > 1 ? parts[parts.length - 2] + '/' : ''));
         a.appendChild(el('span', 'base', parts[parts.length - 1]));
         a.title = f;
-        var first = sectionsOf[f][it.target.id].first;
+        var first = sectionsOf[f][it.target.id];
         a.href = '#' + first.getAttribute('data-file') + '::' + first.getAttribute('data-symbol');
         li.appendChild(a);
-        if (here < total) {
-          li.className = 'partial';
-          var elsewhere = Object.keys(sectionsOf[f]).filter(function (s) { return s !== it.target.id; })
-            .map(function (s) { return titleOf[s] || s; });
-          var frac = el('span', 'frac', here + '/' + total);
-          frac.title = here + ' of ' + total + ' hunks under this heading; rest under: ' + elsewhere.join(', ');
-          li.appendChild(frac);
-          a.title = f + ' (' + frac.title + ')';
-        }
         ul.appendChild(li);
       });
       it.li.appendChild(ul);

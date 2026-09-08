@@ -54,8 +54,7 @@ identifier match of `NAME` in that page's hunks (plus prose `<code>NAME</code>`
 or `<code>NAME()</code>`) links to it; a name added more than once on the page
 is ambiguous and not linked. On wide
 viewports it draws a TOC sidebar: sections, and under each the files whose hunks
-appear there; `n/N` marks a file whose other hunks (in this page) sit under other
-headings, and its tooltip names them.
+appear there.
 
 After changing HTML or the renderer, use the real browser renderer:
 

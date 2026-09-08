@@ -1,9 +1,11 @@
 # Narrated diff of the Megatron SPMD type-checking change
 
-`index.html` is the document; `appendix.html` holds hunks that repeat a pattern
-already shown, under the same headings. Every `*.html` here is synced and checked;
-link to a shunted hunk with `appendix.html#file::symbol`. `tour.py` keeps the diff hunks inside it in sync
-with the branch; you write the prose around them.
+`index.html` is the document. Hunks that only repeat a pattern already shown
+sit in its closing `<section id="appendix">`, inside a `<details class="appendix">`
+that starts collapsed with a diffstat in its summary; the renderer keeps that
+section's files out of the sidebar and opens it when a link (`#file::symbol`,
+`#def-NAME`) points inside. Every `*.html` here is synced and checked. `tour.py`
+keeps the diff hunks in sync with the branch; you write the prose around them.
 
     python3 tour.py init  REPO_PATH BASE HEAD   # merge-base, extract units into scratch.html, write meta tags
     python3 tour.py sync  REPO_PATH [HEAD]      # refresh hunks against HEAD (default: repo's checked-out HEAD)

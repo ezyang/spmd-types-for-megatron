@@ -261,7 +261,8 @@
   }
 
   function toc() {
-    var heads = document.querySelectorAll('h2, h3');
+    // Headings and hunks inside the collapsed appendix stay out of the sidebar.
+    var heads = Array.prototype.filter.call(document.querySelectorAll('h2, h3'), function (h) { return !h.closest('details.appendix'); });
     if (!heads.length) return;
     var nav = el('nav', 'toc'), list = el('ul'), items = [];
     var h1 = document.querySelector('h1');
@@ -298,10 +299,10 @@
     }
 
     // Per file: which distinct hunks (by data-hash) appear under which heading.
-    // The count is per document; hunks of the same file in other pages
-    // (e.g. appendix.html) are not visible from here.
+    // Appendix hunks are not counted, so they never make a file "partial".
     var hunksOf = {}, sectionsOf = {};
     Array.prototype.forEach.call(document.querySelectorAll('pre.hunk'), function (pre) {
+      if (pre.closest('details.appendix')) return;
       var file = pre.getAttribute('data-file'), key = pre.getAttribute('data-hash') || pre.getAttribute('data-symbol');
       var sec = headingOf(pre);
       if (!file || !sec) return;
@@ -355,9 +356,67 @@
     update();
   }
 
+  // <details class="appendix">: collapsed by default; its <summary> carries a
+  // diffstat of the hunks inside, and any link into it opens it first.
+  function appendix() {
+    Array.prototype.forEach.call(document.querySelectorAll('details.appendix'), function (det) {
+      var summary = det.querySelector('summary') || det.insertBefore(el('summary'), det.firstChild);
+      var files = {}, order = [], hunks = 0, adds = 0, dels = 0;
+      Array.prototype.forEach.call(det.querySelectorAll('pre.hunk'), function (pre) {
+        var file = pre.getAttribute('data-file') || '';
+        if (!files[file]) { files[file] = { add: 0, del: 0, hunks: 0 }; order.push(file); }
+        files[file].hunks++; hunks++;
+        parse(pre.textContent).forEach(function (r) {
+          if (r.sep) return;
+          if (r.tag === '+') { files[file].add++; adds++; }
+          if (r.tag === '-') { files[file].del++; dels++; }
+        });
+      });
+      summary.textContent = '';
+      summary.appendChild(el('span', 'appendix-title', hunks + ' more hunk' + (hunks === 1 ? '' : 's') + ' in ' + order.length + ' file' + (order.length === 1 ? '' : 's')));
+      summary.appendChild(el('span', 'add', '+' + adds));
+      summary.appendChild(el('span', 'del', '\u2212' + dels));
+      var stat = el('table', 'diffstat'), tb = el('tbody'), max = 1;
+      order.forEach(function (f) { max = Math.max(max, files[f].add + files[f].del); });
+      order.sort().forEach(function (f) {
+        var st = files[f], tr = el('tr');
+        var a = el('a', 'file', f);
+        var first = det.querySelector('pre.hunk[data-file="' + f.replace(/"/g, '\\"') + '"]');
+        a.href = '#' + f + '::' + first.getAttribute('data-symbol');
+        tr.appendChild(el('td', 'file')).appendChild(a);
+        tr.appendChild(el('td', 'n', st.hunks));
+        tr.appendChild(el('td', 'n add', '+' + st.add));
+        tr.appendChild(el('td', 'n del', '\u2212' + st.del));
+        var bar = el('td', 'bar'), w = 40 * (st.add + st.del) / max;
+        var ba = el('span', 'add'), bd = el('span', 'del');
+        ba.style.width = (w * st.add / (st.add + st.del || 1)) + 'px';
+        bd.style.width = (w * st.del / (st.add + st.del || 1)) + 'px';
+        bar.appendChild(ba); bar.appendChild(bd);
+        tr.appendChild(bar);
+        tb.appendChild(tr);
+      });
+      stat.appendChild(tb);
+      // Outside the <details>, so it is visible while the details are closed.
+      det.insertAdjacentElement('afterend', stat);
+    });
+
+    function reveal() {
+      if (!location.hash) return;
+      var id;
+      try { id = decodeURIComponent(location.hash.slice(1)); } catch (e) { id = location.hash.slice(1); }
+      var target = document.getElementById(id);
+      if (!target) return;
+      var det = target.closest('details.appendix');
+      if (det && !det.open) { det.open = true; target.scrollIntoView(); }
+    }
+    window.addEventListener('hashchange', reveal);
+    reveal();
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
     renderAll();
     crosslink();
     toc();
+    appendix();
   });
 })();

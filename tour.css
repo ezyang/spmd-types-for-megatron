@@ -48,3 +48,21 @@ pre.hunk { display: none; }
 a.ref > code { color: #0550ae; }
 .tour .def { font-weight: bold; scroll-margin-top: 1em; }
 .tour .def:target { background: #fff3b0; outline: 2px solid #f2d36b; }
+details.appendix { margin: 1em 0 0 0; }
+details.appendix > summary { cursor: pointer; font: 14px/1.5 Helvetica, Arial, sans-serif; color: #444; padding: 6px 10px; background: #f6f8fa; border: 1px solid #ddd; border-radius: 4px; }
+details.appendix:not([open]) > summary { border-radius: 4px 4px 0 0; }
+details.appendix > summary:hover { background: #eef2f6; }
+details.appendix > summary .appendix-title { margin-right: 1em; }
+details.appendix > summary .add, .diffstat .add { color: #1a7f37; }
+details.appendix > summary .del, .diffstat .del { color: #cf222e; }
+details.appendix > summary .del { margin-left: 0.5em; }
+details.appendix + .diffstat { border-collapse: collapse; margin: 0 0 1em 0; width: 100%; font: 11px/1.6 ui-monospace, Menlo, Consolas, monospace; border: 1px solid #ddd; border-top: 0; border-radius: 0 0 4px 4px; }
+details.appendix[open] + .diffstat { display: none; }
+table.diffstat td { padding: 0 8px; white-space: nowrap; }
+table.diffstat td.file { width: 100%; overflow: hidden; text-overflow: ellipsis; max-width: 0; }
+table.diffstat td.file a { color: #0550ae; text-decoration: none; }
+table.diffstat td.file a:hover { text-decoration: underline; }
+table.diffstat td.n { text-align: right; color: #666; }
+table.diffstat td.bar span { display: inline-block; height: 8px; vertical-align: middle; }
+table.diffstat td.bar span.add { background: #2da44e; }
+table.diffstat td.bar span.del { background: #cf222e; }

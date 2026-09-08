@@ -1801,5 +1801,888 @@ rule from that.
 </pre>
 </section>
 
+<section id="appendix">
+<h2>Appendix</h2>
+<p>The remaining hunks. Each repeats a pattern already shown above, grouped under
+the same headings. Collapsed by default; the summary is a diffstat of what is inside.</p>
+<details class="appendix">
+<summary></summary>
+<h3>Annotating custom autograd functions</h3>
+<h4>Local functions</h4>
+<pre class="hunk" data-file="megatron/core/fusions/fused_mla_yarn_rope_apply.py" data-symbol="ApplyMLARotaryEmbKV" data-hash="ce876e4785">
+@@ -578,6 +580,7 @@ rotary_bwd_kv_kernel
+         tl.store(dEMB_ptr + tl.arange(0, emb_dim // 2) * 2 + 1, x_2)
+ 
+ 
++@spmd.register_local_autograd_function
+ class ApplyMLARotaryEmbKV(torch.autograd.Function):
+     """
+     Autograd function for applying YARN RoPE to MLA's key and value.
+</pre>
+<pre class="hunk" data-file="megatron/core/utils.py" data-symbol="MakeViewlessTensor" data-hash="ce876e4785">
+@@ -696,6 +697,7 @@ WrappedTensor.unwrap
+         return self._wrapper.pop(0)
+ 
+ 
++@spmd.register_local_autograd_function
+ class MakeViewlessTensor(torch.autograd.Function):
+     """
+     Autograd function to make a viewless tensor.
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/moe_utils.py" data-symbol="RouterGatingLinearFunction" data-hash="ce876e4785">
+@@ -1304,6 +1314,7 @@ apply_biased_logits
+     return RandomSTEShared.apply(logits, std, layer_number)
+ 
+ 
++@spmd.register_local_autograd_function
+ class RouterGatingLinearFunction(torch.autograd.Function):
+     """
+     Autograd function for router gating linear.
+</pre>
+<h4>Declaring a contract with spmd_typecheck</h4>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_GatherFromModelParallelRegion.spmd_typecheck" data-hash="44f9a73e16" data-render="added" data-context="class">
+@@ -256,18 +278,24 @@ _GatherFromModelParallelRegion
+ class _GatherFromModelParallelRegion(torch.autograd.Function):
+     """Gather the input from model parallel region and concatinate."""
+ 
+     @staticmethod
+     def symbolic(graph, input_, group):
+         """Symbolic function for tracing."""
+         return _gather_along_last_dim(input_, group)
+ 
+     @staticmethod
+     def forward(ctx, input_, group):
+         """Forward function."""
+         ctx.group = group
+         return _gather_along_last_dim(input_, group)
+ 
++    @staticmethod
++    def spmd_typecheck(output, *, input_, group):
++        """Type the last-dimension gather and split backward."""
++        spmd.assert_type(input_, {group: spmd.S(-1)})
++        spmd.assert_local_type_like(output, input_, {group: spmd.I})
++
+     @staticmethod
+     def backward(ctx, grad_output):
+         """Backward function."""
+         return _split_along_last_dim(grad_output, ctx.group), None
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ScatterToSequenceParallelRegion.spmd_typecheck" data-hash="a7d955f907" data-render="added" data-context="class">
+@@ -276,18 +304,24 @@ _ScatterToSequenceParallelRegion
+ class _ScatterToSequenceParallelRegion(torch.autograd.Function):
+     """Split the input and keep only the corresponding chuck to the rank."""
+ 
+     @staticmethod
+     def symbolic(graph, input_, group):
+         """Symbolic function for tracing."""
+         return _split_along_first_dim(input_, group)
+ 
+     @staticmethod
+     def forward(ctx, input_, group):
+         """Forward function."""
+         ctx.group = group
+         return _split_along_first_dim(input_, group)
+ 
++    @staticmethod
++    def spmd_typecheck(output, *, input_, group):
++        """Type the sequence split and gather backward."""
++        spmd.assert_type(input_, {group: spmd.I})
++        spmd.assert_local_type_like(output, input_, {group: spmd.S(0)})
++
+     @staticmethod
+     def backward(ctx, grad_output):
+         """Backward function."""
+         return _gather_along_first_dim(grad_output, ctx.group), None
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceScatterToSequenceParallelRegion.spmd_typecheck" data-hash="1f2d251709" data-render="added" data-context="class">
+@@ -351,27 +392,33 @@ _ReduceScatterToSequenceParallelRegion
+ class _ReduceScatterToSequenceParallelRegion(torch.autograd.Function):
+     """Reduce scatter the input from the model parallel region."""
+ 
+     @staticmethod
+     def symbolic(graph, input_, group, input_split_sizes=None, use_global_buffer=False):
+         """Symbolic function for tracing."""
+         return _reduce_scatter_along_first_dim(input_, group, input_split_sizes, use_global_buffer)
+ 
+     @staticmethod
+     def forward(ctx, input_, group, input_split_sizes=None, use_global_buffer=False):
+         """Forward function."""
+         ctx.group = group
+         ctx.input_split_sizes = input_split_sizes
+         ctx.use_global_buffer = use_global_buffer
+         return _reduce_scatter_along_first_dim(input_, group, input_split_sizes, use_global_buffer)
+ 
++    @staticmethod
++    def spmd_typecheck(output, *, input_, group):
++        """Type the sequence reduce-scatter and gather backward."""
++        spmd.assert_type(input_, {group: spmd.V})
++        spmd.assert_local_type_like(output, input_, {group: spmd.S(0)})
++
+     @staticmethod
+     def backward(ctx, grad_output):
+         """Backward function."""
+         input_split_sizes = ctx.input_split_sizes
+         use_global_buffer = ctx.use_global_buffer
+         return (
+             _gather_along_first_dim(grad_output, ctx.group, input_split_sizes, use_global_buffer),
+             None,
+             None,
+             None,
+         )
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_AllGatherFromTensorParallelRegion.spmd_typecheck" data-hash="0279d6d690" data-render="added" data-context="class">
+@@ -380,18 +427,24 @@ _AllGatherFromTensorParallelRegion
+ class _AllGatherFromTensorParallelRegion(torch.autograd.Function):
+     """Gather the input from model parallel region and concatenate."""
+ 
+     @staticmethod
+     def symbolic(graph, input_, group):
+         """Symbolic function for tracing."""
+         return _gather_along_last_dim(input_, group)
+ 
+     @staticmethod
+     def forward(ctx, input_, group):
+         """Forward function."""
+         ctx.group = group
+         return _gather_along_last_dim(input_, group)
+ 
++    @staticmethod
++    def spmd_typecheck(output, *, input_, group):
++        """Type the last-dimension all-gather and reduce-scatter backward."""
++        spmd.assert_type(input_, {group: spmd.S(-1)})
++        spmd.assert_local_type_like(output, input_, {group: spmd.R})
++
+     @staticmethod
+     def backward(ctx, grad_output):
+         """Backward function."""
+         return _reduce_scatter_along_last_dim(grad_output, ctx.group), None
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_ReduceScatterToTensorParallelRegion.spmd_typecheck" data-hash="8eaac0cc87" data-render="added" data-context="class">
+@@ -400,18 +453,24 @@ _ReduceScatterToTensorParallelRegion
+ class _ReduceScatterToTensorParallelRegion(torch.autograd.Function):
+     """Reduce scatter the input from the model parallel region."""
+ 
+     @staticmethod
+     def symbolic(graph, input_, group):
+         """Symbolic function for tracing."""
+         return _reduce_scatter_along_last_dim(input_, group)
+ 
+     @staticmethod
+     def forward(ctx, input_, group):
+         """Forward function."""
+         ctx.group = group
+         return _reduce_scatter_along_last_dim(input_, group)
+ 
++    @staticmethod
++    def spmd_typecheck(output, *, input_, group):
++        """Type the last-dimension reduce-scatter and all-gather backward."""
++        spmd.assert_type(input_, {group: spmd.V})
++        spmd.assert_local_type_like(output, input_, {group: spmd.S(-1)})
++
+     @staticmethod
+     def backward(ctx, grad_output):
+         """Backward function."""
+         return _gather_along_last_dim(grad_output, ctx.group), None
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="_AllToAll.spmd_typecheck" data-hash="65f0b95fde" data-render="added" data-context="class">
+@@ -420,42 +479,48 @@ _AllToAll
+ class _AllToAll(torch.autograd.Function):
+     @staticmethod
+     def forward(ctx, group, input, output_split_sizes, input_split_sizes):
+         """Forward function."""
+         ctx.group = group
+         ctx.output_split_sizes = output_split_sizes
+         ctx.input_split_sizes = input_split_sizes
+ 
+         world_size = group.size()
+         # Bypass the function if we are using only 1 GPU.
+         if world_size == 1:
+             return input
+ 
+         input = input.contiguous()
+         if output_split_sizes is None:
+             # Equal split (all2all)
+             output = torch.empty_like(input)
+         else:
+             # Unequal split (all2all-v)
+             output = input.new_empty(
+                 size=[sum(output_split_sizes)] + list(input.size()[1:]),
+                 dtype=input.dtype,
+                 device=torch.cuda.current_device(),
+             )
+         torch.distributed.all_to_all_single(
+             output,
+             input,
+             output_split_sizes=output_split_sizes,
+             input_split_sizes=input_split_sizes,
+             group=group,
+         )
+         return output
+ 
++    @staticmethod
++    def spmd_typecheck(output, *, group, input):
++        """Type the self-adjoint token exchange."""
++        spmd.assert_type(input, {group: spmd.S(0)})
++        spmd.assert_local_type_like(output, input, {group: spmd.S(0)})
++
+     @staticmethod
+     def backward(ctx, *grad_output):
+         """Backward function."""
+         return (
+             None,
+             _AllToAll.apply(ctx.group, *grad_output, ctx.input_split_sizes, ctx.output_split_sizes),
+             None,
+             None,
+         )
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/layers.py" data-symbol="LinearWithFrozenWeight.spmd_typecheck" data-hash="92c3c5ddf2" data-render="added" data-context="class">
+@@ -335,33 +336,52 @@ LinearWithFrozenWeight
+ class LinearWithFrozenWeight(torch.autograd.Function):
+     """Linear operator that does not calculate gradient for weight.
+     This op and LinearWithGradAccumulationAndAsyncCommunication performs
+     mathematically-identical forward and DGRAD.
+ 
+     Conceptually this op is the same as torch.nn.functional.linear with
+     weight.requires_grad==False, but in experiments they are not identical
+     mathematically."""
+ 
+     @staticmethod
+     @custom_fwd
+     def forward(ctx, input, weight, bias, allreduce_dgrad, tp_group):
+         """Forward with frozen weight."""
+         ctx.save_for_backward(weight)
+         ctx.allreduce_dgrad = allreduce_dgrad
+         ctx.tp_group = tp_group
+         output = torch.matmul(input, weight.t())
+         if bias is not None:
+             output = output + bias
+         return output
+ 
++    @staticmethod
++    def spmd_typecheck(output, *, input, weight, bias, allreduce_dgrad, tp_group):
++        """Check the tensor-parallel contract of the completed frozen linear."""
++        tp_axis = spmd.normalize_axis(tp_group)
++        spmd.assert_type(weight, {tp_axis: spmd.V})
++        if bias is not None:
++            spmd.assert_type(bias, {tp_axis: spmd.V})
++        if allreduce_dgrad:
++            input_type = spmd.I
++        elif spmd.get_axis_local_type(input, tp_axis) is spmd.R:
++            # Sequence parallelism gathers S(0) to R before calling the
++            # frozen linear. Other no-reduction paths consume V/S inputs.
++            input_type = spmd.R
++        else:
++            input_type = spmd.V
++        spmd.assert_type(input, {tp_axis: input_type})
++
++        spmd.assert_local_type_like(output, input, {tp_axis: spmd.V})
++
+     @staticmethod
+     @custom_bwd
+     def backward(ctx, grad_output):
+         """Backward with frozen weight."""
+         (weight,) = ctx.saved_tensors
+         grad_input = grad_output.matmul(weight)
+ 
+         if ctx.allreduce_dgrad:
+             # All-reduce. Note: here async and sync are effectively the same.
+             torch.distributed.all_reduce(grad_input, group=ctx.tp_group)
+ 
+         return grad_input, None, None, None, None
+</pre>
+<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="_named_non_tensor_args" data-hash="54f01c0848" data-render="added">
+@@ -666,0 +675,10 @@ _named_non_tensor_args
++
++    def _named_non_tensor_args(unpacker, values):
++        """Name a tuple immediately unpacked into a function's first locals."""
++        first_local = len(inspect.signature(unpacker).parameters)
++        names = unpacker.__code__.co_varnames[first_local : first_local + len(values)]
++        if len(names) != len(values):
++            raise NotImplementedError(
++                f"Could not identify all non-tensor arguments for {unpacker.__qualname__}"
++            )
++        return dict(zip(names, values))
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/multi_token_prediction.py" data-symbol="MTPLossAutoScaler.spmd_typecheck" data-hash="55781a629a" data-render="added">
+@@ -582,6 +583,15 @@ MTPLossAutoScaler.forward
+         ctx.save_for_backward(mtp_loss)
+         return output
+ 
++    @staticmethod
++    def spmd_typecheck(result, *, output):
++        """The forward is the identity on ``output``.
++
++        ``mtp_loss`` only contributes a gradient in backward, so it must not
++        influence the result's type; the generic local rule would let it.
++        """
++        spmd.assert_type_like(result, output)
++
+     @staticmethod
+     def backward(ctx, grad_output: torch.Tensor):
+         """Compute and scale the gradient for mtp loss..
+</pre>
+
+<h3>Parameter conventions</h3>
+<h4>Handling FSDP</h4>
+<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.finish_grad_sync" data-hash="eec13b8de0">
+@@ -544,8 +579,9 @@ DistributedDataParallel.finish_grad_sync
+         calls to complete. When overlap_grad_reduce is set to False, calls synchronous
+         communication ops.
+         """
+-        for bucket_group in self.bucket_groups + self.expert_parallel_bucket_groups:
+-            bucket_group.finish_grad_sync(force_all_reduce=force_all_reduce)
++        with spmd.no_typecheck():
++            for bucket_group in self.bucket_groups + self.expert_parallel_bucket_groups:
++                bucket_group.finish_grad_sync(force_all_reduce=force_all_reduce)
+ 
+     def free_overlap_buffers(self):
+         """Free overlap param-gather GPU buffers across all bucket groups."""
+</pre>
+
+<h3>Checking a 256-GPU job on one GPU</h3>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_is_fake_process_group" data-hash="849b6f7202" data-render="added">
+@@ -350,3 +351,6 @@ reset_hybrid_ep_buffer
+     _hybrid_ep_buffer = None
+ 
+ 
++def _is_fake_process_group(group: torch.distributed.ProcessGroup) -&gt; bool:
++    """Whether ``group`` uses PyTorch's fake backend, which performs no communication."""
++    return torch.distributed.get_backend(group) == "fake"
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_fake_combine" data-hash="5f9ef99e91" data-render="added">
+@@ -353,3 +378,11 @@ _fake_combine
++
++
++def _fake_combine(x, handle):
++    """Inverse of ``_fake_dispatch``: sum each token's rows back into its original slot."""
++    indices, num_tokens, _ = handle
++    return x.new_zeros(num_tokens, *x.shape[1:]).index_add_(0, indices, x)
++
++
+ class HybridEPDispatch(torch.autograd.Function):
+     '''
+     Fused dispatch operation for permute + dispatch a2a + permute using the HybridEP backend
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch.backward" data-hash="3c97fe92c3">
+@@ -446,6 +506,10 @@ HybridEPDispatch.backward
+         Backward pass of fused dispatch of the HybridEP backend
+         '''
+         handle = ctx.handle
++        if ctx.fake:
++            combined_hidden = _fake_combine(grad_x, handle)
++            combined_probs = grad_x.new_zeros(ctx.probs_shape)
++            return (combined_hidden, None, combined_probs) + (None,) * 10
+         combined_hidden, combined_probs = _hybrid_ep_buffer.combine_with_unpermute(
+             hidden=grad_x,
+             probs=grad_probs,
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPCombine.forward" data-hash="cd1e140791">
+@@ -481,6 +545,11 @@ HybridEPCombine.forward
+         '''
+         Forward pass of fused combine of the HybridEP backend
+         '''
++        ctx.fake = isinstance(handle, tuple) and len(handle) == 3 and isinstance(handle[1], int)
++        if ctx.fake:
++            ctx.handle = handle
++            with spmd.no_typecheck():
++                return _fake_combine(x, handle)
+         combined_hidden, _ = _hybrid_ep_buffer.combine_with_unpermute(
+             hidden=x,
+             handle=handle,
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPCombine.backward" data-hash="3db60445f6">
+@@ -499,6 +573,9 @@ HybridEPCombine.backward
+         Backward pass of fused combine of the HybridEP backend
+         '''
+         handle = ctx.handle
++        if ctx.fake:
++            indices, _, _ = handle
++            return grad_x.index_select(0, indices), None, None, None, None
+         dispatched_hidden, _, _, _, _ = _hybrid_ep_buffer.dispatch_with_permute(
+             hidden=grad_x,
+             scaling_factor=None,
+</pre>
+<pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="_make_mlperf_deepseek_v3_config" data-hash="91f8e91db2" data-render="added">
+@@ -0,0 +27,114 @@ _make_mlperf_deepseek_v3_config
++
++
++def _make_mlperf_deepseek_v3_config() -&gt; MLATransformerConfig:
++    """The MLPerf Training v6.0 NVIDIA GB200 DeepSeek-V3 configuration.
++
++    This mirrors ``config_GB200_64x4x480xtp2pp4ep32cp1_mxfp8_full_cg.sh``.
++    Launcher, optimizer, and data-loader flags that do not belong to
++    ``MLATransformerConfig`` are intentionally outside this model-level test.
++    """
++    return MLATransformerConfig(
++        tensor_model_parallel_size=2,
++        pipeline_model_parallel_size=4,
++        virtual_pipeline_model_parallel_size=4,
++        sequence_parallel=True,
++        context_parallel_size=1,
++        expert_model_parallel_size=32,
++        expert_tensor_parallel_size=1,
++        pipeline_dtype=torch.bfloat16,
++        deallocate_pipeline_outputs=False,
++        microbatch_group_size_per_vp_stage=4,
++        gradient_accumulation_fusion=True,
++        cross_entropy_loss_fusion=True,
++        cross_entropy_fusion_impl="te",
++        num_layers=61,
++        mtp_num_layers=1,
++        mtp_loss_scaling_factor=0.1,
++        pipeline_model_parallel_layout=MLPERF_DEEPSEEK_V3_PIPELINE_LAYOUT,
++        hidden_size=7168,
++        num_attention_heads=128,
++        num_query_groups=128,
++        ffn_hidden_size=18432,
++        kv_channels=64,
++        hidden_dropout=0.0,
++        attention_dropout=0.0,
++        layernorm_epsilon=1e-6,
++        add_bias_linear=False,
++        gated_linear_unit=True,
++        activation_func=F.silu,
++        num_moe_experts=256,
++        qk_layernorm=True,
++        init_method_std=0.006,
++        bias_activation_fusion=True,
++        masked_softmax_fusion=True,
++        persist_layer_norm=True,
++        bias_dropout_fusion=True,
++        apply_rope_fusion=True,
++        use_transformer_engine_op_fuser=True,
++        fused_residual_rmsnorm=True,
++        # The production recipe recomputes the dense MLP. Type checking does not
++        # run out of memory without it, and with checkpointing off the checker
++        # sees the MLP as ordinary operations instead of an opaque autograd
++        # boundary whose output type it would otherwise have to take on trust.
++        recompute_granularity=None,
++        fp8="e4m3",
++        fp8_recipe="mxfp8",
++        fp8_param=True,
++        fp8_wgrad=True,
++        fp8_output_proj=True,
++        fp8_dot_product_attention=True,
++        high_priority_a2a_comm_stream=False,
++        moe_shared_expert_intermediate_size=2048,
++        moe_shared_expert_overlap=False,
++        moe_layer_freq=[0] * 3 + [1] * 58,
++        moe_ffn_hidden_size=2048,
++        moe_router_load_balancing_type="seq_aux_loss",
++        moe_router_topk=8,
++        moe_router_num_groups=8,
++        moe_router_group_topk=4,
++        moe_router_pre_softmax=True,
++        moe_router_topk_scaling_factor=2.5,
++        moe_router_score_function="sigmoid",
++        moe_router_dtype="bf16",
++        moe_router_enable_expert_bias=True,
++        moe_grouped_gemm=True,
++        moe_single_grouped_weight=False,
++        moe_single_grouped_bias=False,
++        moe_aux_loss_coeff=0.01,
++        moe_token_dispatcher_type="flex",
++        moe_flex_dispatcher_backend="hybridep",
++        moe_permute_fusion=True,
++        moe_router_fusion=True,
++        moe_hybridep_num_sms=32,
++        moe_hybridep_num_sms_preprocessing=32,
++        moe_mlp_glu_interleave_size=32,
++        moe_expert_rank_capacity_factor=4,
++        moe_paged_stash=True,
++        moe_paged_stash_buffer_size_factor_cuda=1.5,
++        moe_paged_stash_buffer_size_factor_cpu=1.0,
++        # These tests call the model forward directly rather than through the
++        # pipeline schedule, so the overlap features that need the schedule
++        # driver are disabled.
++        overlap_moe_expert_parallel_comm=False,
++        delay_wgrad_compute=False,
++        use_te_activation_func=False,
++        cuda_graph_impl="local",
++        cuda_graph_scope=[CudaGraphScope.full_iteration],
++        cuda_graph_warmup_steps=2,
++        use_te_rng_tracker=True,
++        q_lora_rank=1536,
++        kv_lora_rank=512,
++        qk_head_dim=128,
++        qk_pos_emb_head_dim=64,
++        v_head_dim=128,
++        rotary_base=10000.0,
++        rotary_scaling_factor=40,
++        original_max_position_embeddings=4096,
++        beta_fast=32.0,
++        beta_slow=1.0,
++        mscale=1.0,
++        mscale_all_dim=1.0,
++        bf16=True,
++        params_dtype=torch.bfloat16,
++        transformer_impl="transformer_engine",
++    )
+</pre>
+<pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="_build_mlperf_deepseek_v3_model" data-hash="c92b113a29" data-render="added">
+@@ -0,0 +141,29 @@ _build_mlperf_deepseek_v3_model
++
++
++def _build_mlperf_deepseek_v3_model(config: MLATransformerConfig, vp_stage: int) -&gt; GPTModel:
++    pp_rank = parallel_state.get_pipeline_model_parallel_rank()
++    block_spec = get_gpt_decoder_block_spec(
++        config,
++        use_transformer_engine=True,
++        normalization="RMSNorm",
++        vp_stage=vp_stage,
++        pp_rank=pp_rank,
++    )
++    mtp_spec = get_gpt_mtp_block_spec(
++        config, block_spec, use_transformer_engine=True, vp_stage=vp_stage, pp_rank=pp_rank
++    )
++    local_layout = config.pipeline_model_parallel_layout.layout[pp_rank][vp_stage]
++    return GPTModel(
++        config=config,
++        transformer_layer_spec=block_spec,
++        vocab_size=MLPERF_DEEPSEEK_V3_VOCAB_SIZE,
++        max_sequence_length=MLPERF_DEEPSEEK_V3_SEQUENCE_LENGTH,
++        pre_process=LayerType.embedding in local_layout,
++        post_process=LayerType.loss in local_layout,
++        parallel_output=True,
++        share_embeddings_and_output_weights=False,
++        position_embedding_type="rope",
++        scatter_embedding_sequence_parallel=True,
++        mtp_block_spec=mtp_spec,
++        vp_stage=vp_stage,
++    )
+</pre>
+<pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="mlperf_environment" data-hash="406c84c6d0" data-render="added">
+@@ -0,0 +170,15 @@ mlperf_environment
++
++
++@pytest.fixture
++def mlperf_environment(monkeypatch):
++    """The part of the MLPerf recipe that lives in environment variables.
++
++    ``config_GB200_64x4x480xtp2pp4ep32cp1_mxfp8_full_cg.sh`` exports
++    ``NVTE_CUTEDSL_FUSED_GROUPED_MLP=1`` to select TE's CuTe DSL grouped-MLP kernel.
++    The unit-test harness also forces TE's unfused attention through
++    ``NVTE_*_ATTN``; the recipe leaves ``attention_backend=auto`` and lets
++    ``GPTModel`` set those variables itself, so they are cleared here.
++    """
++    monkeypatch.setenv("NVTE_CUTEDSL_FUSED_GROUPED_MLP", "1")
++    for variable in ("NVTE_FLASH_ATTN", "NVTE_FUSED_ATTN", "NVTE_UNFUSED_ATTN"):
++        monkeypatch.delenv(variable, raising=False)
+</pre>
+<pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="_wrap_in_ddp" data-hash="85ea441018" data-render="added">
+@@ -0,0 +185,19 @@ _wrap_in_ddp
++
++
++def _wrap_in_ddp(config: MLATransformerConfig, model: GPTModel) -&gt; DistributedDataParallel:
++    """Wrap the model the way the recipe trains it.
++
++    MLPerf runs Megatron's DistributedDataParallel with the distributed optimizer.
++    Besides installing the ``main_grad`` buffers that fused weight-gradient
++    accumulation writes into, DDP is the component that promises parameters are
++    replicated across data parallelism, since it performs that gradient
++    reduction. The MXFP8 parameter-gather settings match ``config_common_mxfp8.sh``;
++    the recipe's communication overlap flags are left off because they add
++    parameter all-gathers that only make sense across optimizer steps.
++    """
++    ddp_config = DistributedDataParallelConfig(
++        use_distributed_optimizer=True,
++        fp8_param_gather=True,
++        reuse_grad_buf_for_mxfp8_param_ag=True,
++    )
++    return DistributedDataParallel(config, ddp_config, model)
+</pre>
+<pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="&lt;module&gt;" data-hash="0e2508a83b" data-render="added">
+@@ -0,0 +1,26 @@
++from contextlib import contextmanager
++from unittest.mock import patch
++
++import pytest
++import spmd_types as spmd
++import torch
++import torch.nn.functional as F
++from torch.testing._internal.distributed.fake_pg import FakeStore
++
++from megatron.core import parallel_state
++from megatron.core.distributed import DistributedDataParallel, DistributedDataParallelConfig
++from megatron.core.models.gpt.gpt_layer_specs import (
++    get_gpt_decoder_block_spec,
++    get_gpt_mtp_block_spec,
++)
++from megatron.core.models.gpt.gpt_model import GPTModel
++from megatron.core.spmd import annotate_model, typecheck
++from megatron.core.tensor_parallel import mappings
++from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
++from megatron.core.transformer.enums import CudaGraphScope, LayerType
++from megatron.core.transformer.multi_token_prediction import MTPLossLoggingHelper
++from megatron.core.transformer.transformer_config import MLATransformerConfig, TransformerConfig
++
++MLPERF_DEEPSEEK_V3_VOCAB_SIZE = 129280
++MLPERF_DEEPSEEK_V3_SEQUENCE_LENGTH = 4096
++MLPERF_DEEPSEEK_V3_PIPELINE_LAYOUT = "Et*4|(t*4|)*14tmL"
+</pre>
+
+<h3>Everything else</h3>
+<pre class="hunk" data-file="megatron/core/spmd/__init__.py" data-symbol="&lt;module&gt;" data-hash="343e405faa" data-render="added">
+@@ -0,0 +1,6 @@
++"""Optional SPMD type-checking integration for Megatron Core."""
++
++from .annotations import annotate_model, annotate_tensor
++from .checker import typecheck
++
++__all__ = ["annotate_model", "annotate_tensor", "typecheck"]
+</pre>
+<pre class="hunk" data-file="pyproject.toml" data-symbol="&lt;hunk 1&gt;" data-hash="e5a349199a">
+@@ -63,6 +63,10 @@ Download = "https://github.com/NVIDIA/Megatron-LM/releases"
+ Homepage = "https://github.com/NVIDIA/Megatron-LM"
+ 
+ [project.optional-dependencies]
++spmd = [
++    "spmd_types==0.2.5",
++]
++
+ training = [
+     "flask-restful",
+     "sentencepiece",
+</pre>
+<pre class="hunk" data-file="pyproject.toml" data-symbol="&lt;hunk 2&gt;" data-hash="6b86f682fb">
+@@ -144,6 +148,7 @@ test = [
+     "tensorboard",
+     "pyyaml",
+     "nemo-run",
++    "spmd_types==0.2.5",
+ ]
+ docs = [
+     "sphinx",
+</pre>
+<pre class="hunk" data-file="uv.lock" data-symbol="&lt;hunk 1&gt;" data-hash="cf682360c0">
+@@ -3230,6 +3230,9 @@ mlm = [
+     { name = "transformers" },
+     { name = "wandb" },
+ ]
++spmd = [
++    { name = "spmd-types" },
++]
+ training = [
+     { name = "accelerate" },
+     { name = "flask-restful" },
+</pre>
+<pre class="hunk" data-file="uv.lock" data-symbol="&lt;hunk 2&gt;" data-hash="c5be08cac3">
+@@ -3290,6 +3293,7 @@ test = [
+     { name = "pytest-mock" },
+     { name = "pytest-random-order" },
+     { name = "pyyaml" },
++    { name = "spmd-types" },
+     { name = "tensorboard" },
+     { name = "wrapt" },
+ ]
+</pre>
+<pre class="hunk" data-file="uv.lock" data-symbol="&lt;hunk 3&gt;" data-hash="b28d149008">
+@@ -3338,6 +3342,7 @@ requires-dist = [
+     { name = "quart", marker = "extra == 'dev'" },
+     { name = "sentencepiece", marker = "extra == 'mlm'" },
+     { name = "sentencepiece", marker = "extra == 'training'" },
++    { name = "spmd-types", marker = "extra == 'spmd'", specifier = "==0.2.5" },
+     { name = "tensorstore", marker = "extra == 'dev'", specifier = "~=0.1,!=0.1.46,!=0.1.72" },
+     { name = "tensorstore", marker = "extra == 'lts'", specifier = "~=0.1,!=0.1.46,!=0.1.72" },
+     { name = "tiktoken", marker = "extra == 'mlm'" },
+</pre>
+<pre class="hunk" data-file="uv.lock" data-symbol="&lt;hunk 4&gt;" data-hash="f2003974fd">
+@@ -3353,7 +3358,7 @@ requires-dist = [
+     { name = "wget", marker = "extra == 'dev'" },
+     { name = "wget", marker = "extra == 'lts'" },
+ ]
+-provides-extras = ["training", "mlm", "dev", "lts"]
++provides-extras = ["spmd", "training", "mlm", "dev", "lts"]
+ 
+ [package.metadata.requires-dev]
+ build = [
+</pre>
+<pre class="hunk" data-file="uv.lock" data-symbol="&lt;hunk 5&gt;" data-hash="aa37f2ae4c">
+@@ -3401,6 +3406,7 @@ test = [
+     { name = "pytest-mock" },
+     { name = "pytest-random-order" },
+     { name = "pyyaml" },
++    { name = "spmd-types", specifier = "==0.2.5" },
+     { name = "tensorboard" },
+     { name = "wrapt" },
+ ]
+</pre>
+<pre class="hunk" data-file="uv.lock" data-symbol="&lt;hunk 6&gt;" data-hash="1737f72a02">
+@@ -7797,6 +7803,15 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/52/a7/d2782e4e3f77c8450f727ba74a8f12756d5ba823d81b941f1b04da9d033a/sphinxcontrib_serializinghtml-2.0.0-py3-none-any.whl", hash = "sha256:6e2cb0eef194e10c27ec0023bfeb25badbbb5868244cf5bc5bdc04e4464bf331", size = 92072, upload-time = "2024-07-29T01:10:08.203Z" },
+ ]
+ 
++[[package]]
++name = "spmd-types"
++version = "0.2.5"
++source = { registry = "https://pypi.org/simple" }
++sdist = { url = "https://files.pythonhosted.org/packages/f4/56/c39c2e8523c1133fae620465bbdd87289253c23a5b12bd425ffd5a37a3c4/spmd_types-0.2.5.tar.gz", hash = "sha256:2f104f6384d1b33facd8fa7a631e871c5f05360543508145a8d8435e0e0b03a8", size = 110350, upload-time = "2026-08-24T18:19:00.943Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/2f/fb/53a94354e5f2d41d690bf8634c9b095b113d8ed2fce38f424a41dce49104/spmd_types-0.2.5-py3-none-any.whl", hash = "sha256:58a8288ff810f8a175de3be7d2fb0c0ec276f61054b729211bab189869d41994", size = 123678, upload-time = "2026-08-24T18:18:59.589Z" },
++]
++
+ [[package]]
+ name = "sqlalchemy"
+ version = "2.0.49"
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="&lt;module&gt;" data-hash="47f11f102e" data-render="added">
+@@ -0,0 +1,19 @@
++"""Megatron-specific helpers for working with spmd_types.
++
++These helpers encode Megatron's conventions for how parameters are distributed
++and where gradient reductions occur. Other codebases will need similar helpers,
++but the specific types will differ.
++"""
++
++from __future__ import annotations
++
++from contextlib import contextmanager
++from typing import Iterator
++
++import spmd_types as spmd
++import torch
++import torch.nn as nn
++
++from megatron.core import parallel_state
++from megatron.core.tensor_parallel.layers import VocabParallelEmbedding
++from megatron.core.transformer.moe.token_dispatcher import MoEFlexTokenDispatcher
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/checker.py" data-symbol="&lt;module&gt;" data-hash="3a46b05a36" data-render="added">
+@@ -0,0 +1,12 @@
++"""The Megatron SPMD type-checking context."""
++
++from __future__ import annotations
++
++from contextlib import contextmanager
++from typing import Iterator, Literal
++
++import spmd_types as spmd
++import torch
++from spmd_types.checker import typecheck as _typecheck
++
++from megatron.core.spmd.annotations import model_parallel_mesh
+</pre>
+<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="&lt;module&gt;" data-hash="9bdf686034">
+@@ -4,6 +4,7 @@
+ from contextlib import contextmanager
+ from typing import Optional
+ 
++import spmd_types as spmd
+ import torch
+ 
+ from ..config_logger import has_config_logger_enabled, log_config_to_disk
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/layers.py" data-symbol="&lt;module&gt;" data-hash="9bdf686034">
+@@ -9,6 +9,7 @@
+ from functools import partial
+ from typing import Any, Callable, List, Optional, Tuple
+ 
++import spmd_types as spmd
+ import torch
+ import torch.nn.functional as F
+ from torch.nn.parameter import Parameter
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/mappings.py" data-symbol="&lt;module&gt;" data-hash="9bdf686034">
+@@ -1,5 +1,6 @@
+ # Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
+ 
++import spmd_types as spmd
+ import torch
+ 
+ from megatron.core.parallel_state import get_global_memory_buffer
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/random.py" data-symbol="&lt;module&gt;" data-hash="9bdf686034">
+@@ -9,6 +9,7 @@
+ from collections.abc import Callable
+ from typing import Any, Optional, TypeVar, Union
+ 
++import spmd_types as spmd
+ import torch
+ from torch import _C
+ from torch.cuda import _lazy_call, _lazy_init
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/experts.py" data-symbol="&lt;module&gt;" data-hash="9bdf686034">
+@@ -11,6 +11,7 @@
+ from math import ceil
+ from typing import Optional, Protocol, Tuple
+ 
++import spmd_types as spmd
+ import torch
+ import torch.nn.functional as F
+ 
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="&lt;module&gt;" data-hash="9bdf686034">
+@@ -15,6 +15,7 @@
+ except ImportError:
+     HAVE_DEEP_EP = False
+ 
++import spmd_types as spmd
+ import torch
+ 
+ _buffer = None
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/moe_layer.py" data-symbol="&lt;module&gt;" data-hash="f3c8602340">
+@@ -12,6 +12,7 @@
+ from megatron.core import parallel_state, tensor_parallel, utils
+ from megatron.core.extensions.transformer_engine import HAVE_TE
+ from megatron.core.process_groups_config import ProcessGroupCollection
++from megatron.core.spmd.annotations import expert_parallel_region, leave_expert_parallel_region
+ from megatron.core.transformer.module import MegatronModule
+ from megatron.core.transformer.moe.moe_logging import get_moe_overload_factor_tracker
+ from megatron.core.transformer.moe.moe_utils import (
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/moe_utils.py" data-symbol="&lt;module&gt;" data-hash="9bdf686034">
+@@ -4,6 +4,7 @@
+ from dataclasses import dataclass
+ from typing import List, Optional, Tuple, Union
+ 
++import spmd_types as spmd
+ import torch
+ 
+ from megatron.core import parallel_state
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/multi_token_prediction.py" data-symbol="&lt;module&gt;" data-hash="9bdf686034">
+@@ -6,6 +6,7 @@
+ from dataclasses import dataclass
+ from typing import TYPE_CHECKING, Callable, List, Optional, Union
+ 
++import spmd_types as spmd
+ import torch
+ from torch import Tensor
+ 
+</pre>
+<pre class="hunk" data-file="megatron/core/utils.py" data-symbol="&lt;module&gt;" data-hash="9bdf686034">
+@@ -27,6 +27,7 @@
+ from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union
+ 
+ import numpy
++import spmd_types as spmd
+ import torch
+ 
+ from megatron.core import config
+</pre>
+<pre class="hunk" data-file="megatron/core/fusions/fused_bias_swiglu.py" data-symbol="&lt;module&gt;" data-hash="9bdf686034">
+@@ -3,6 +3,7 @@
+ 
+ # pylint: disable=missing-function-docstring, missing-class-docstring
+ 
++import spmd_types as spmd
+ import torch
+ import torch.nn.functional as F
+ 
+</pre>
+<pre class="hunk" data-file="megatron/core/fusions/fused_mla_yarn_rope_apply.py" data-symbol="&lt;module&gt;" data-hash="9bdf686034">
+@@ -3,6 +3,7 @@
+ from typing import Optional
+ from unittest.mock import MagicMock
+ 
++import spmd_types as spmd
+ import torch
+ from packaging import version
+ 
+</pre>
+</details>
+</section>
+
 </body>
 </html>

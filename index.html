@@ -692,6 +692,107 @@ TODO: switch DSv3 to global spmd types
 +    ):
 +        yield
 </pre>
+<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="&lt;module&gt;" data-hash="a43863d06d" data-lines="10-16,397-405,668-674">
+@@ -10,6 +10,7 @@
+ from contextlib import nullcontext
+ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, cast
+ 
++import spmd_types as spmd
+ import torch
+ import torch.nn.functional as F
+ from packaging.version import Version as PkgVersion
+@@ -396,6 +397,9 @@ TEActivationOp
+ 
+ 
+ if HAVE_TE and is_te_min_version("1.13.0"):
++    from transformer_engine.pytorch.ops.fuser import _OperationFuserAutogradFunction
++
++    spmd.register_local_autograd_function(_OperationFuserAutogradFunction)
+ 
+     class TEActivationOp:
+         """
+@@ -664,3 +668,7 @@ TENorm.__new__
+         return cast(LayerNormInterface, instance)
+ 
+ 
++if HAVE_TE:
++    from transformer_engine.pytorch.module import linear as _te_linear
++
++    _Linear = _te_linear._Linear
+@@ -667,3 +718,7 @@ TELinear
++
++    _Linear.spmd_typecheck = staticmethod(_linear_spmd_typecheck)
++
++
+ class TELinear(te.pytorch.Linear):
+     """Wrapper for the Transformer-Engine's `Linear` layer.
+ 
+@@ -907,3 +962,5 @@ TELinear.backward_dw
+             super().backward_dw()
+ 
+ 
++if HAVE_TE:
++    from transformer_engine.pytorch.module.layernorm_linear import _LayerNormLinear
+@@ -910,3 +979,7 @@ TELayerNormColumnParallelLinear
++
++    _LayerNormLinear.spmd_typecheck = staticmethod(_layernorm_linear_spmd_typecheck)
++
++
+ class TELayerNormColumnParallelLinear(te.pytorch.LayerNormLinear):
+     """Wrapper for the Transformer-Engine's `LayerNormLinear` layer
+     that combines layernorm and linear layers."""
+@@ -1348,6 +1421,12 @@ TERowParallelLinear.backward_dw
+             super().backward_dw()
+ 
+ 
++if HAVE_TE:
++    from transformer_engine.pytorch.attention.dot_product_attention.backends import FusedAttnFunc
++
++    spmd.register_local_autograd_function(FusedAttnFunc)
++
++
+ class TEDotProductAttention(te.pytorch.DotProductAttention):
+     """Wrapper for the Transformer-Engine's `DotProductAttention` layer
+     that also has "flash attention" enabled.
+@@ -2979,7 +3058,10 @@ def fused_apply_rotary_pos_emb_thd(
+     fused_permute_and_pad_with_probs = None
+ 
+ try:
+-    from transformer_engine.pytorch.cross_entropy import parallel_cross_entropy
++    from transformer_engine.pytorch.cross_entropy import (
++        CrossEntropyFunction,
++        parallel_cross_entropy,
++    )
+ 
+     _TE_SUPPORTS_CG_CAPTURABLE = is_te_min_version("2.7.0")
+     current_te_version = get_te_version()
+@@ -3002,3 +3095,6 @@ def _cross_entropy_spmd_typecheck(output, *, inp, target, dist_process_group):
++
++    CrossEntropyFunction.spmd_typecheck = staticmethod(_cross_entropy_spmd_typecheck)
++
+ except ImportError:
+     te_parallel_cross_entropy = None  # type: ignore[assignment, misc]
+ 
+@@ -3054,11 +3150,18 @@ def te_general_gemm(
+ 
+ if HAVE_TE and is_te_min_version("2.7.0.dev"):
+     from transformer_engine.pytorch.router import (  # pylint: disable=unused-import
++        FusedAuxLoss,
++        FusedComputeScoresForMoEAuxLoss,
++        FusedTopkScoreFunction,
+         fused_compute_score_for_moe_aux_loss,
+         fused_moe_aux_loss,
+         fused_topk_with_score_function,
+     )
+ 
++    spmd.register_local_autograd_function(FusedAuxLoss)
++    spmd.register_local_autograd_function(FusedTopkScoreFunction)
++    spmd.register_local_autograd_function(FusedComputeScoresForMoEAuxLoss)
++
+ else:
+     fused_topk_with_score_function = None
+     fused_compute_score_for_moe_aux_loss = None
+</pre>
 <pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="_assert_te_linear_types" data-hash="c2957a4f4f" data-render="added">
 @@ -666,0 +685,26 @@ _assert_te_linear_types
 +
@@ -731,6 +832,107 @@ TODO: switch DSv3 to global spmd types
 +        if weight_workspace is not None:
 +            spmd.assert_local_type_like(weight_workspace, weight)
 </pre>
+<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="&lt;module&gt;" data-hash="a43863d06d" data-lines="718-724,962-966">
+@@ -10,6 +10,7 @@
+ from contextlib import nullcontext
+ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, cast
+ 
++import spmd_types as spmd
+ import torch
+ import torch.nn.functional as F
+ from packaging.version import Version as PkgVersion
+@@ -396,6 +397,9 @@ TEActivationOp
+ 
+ 
+ if HAVE_TE and is_te_min_version("1.13.0"):
++    from transformer_engine.pytorch.ops.fuser import _OperationFuserAutogradFunction
++
++    spmd.register_local_autograd_function(_OperationFuserAutogradFunction)
+ 
+     class TEActivationOp:
+         """
+@@ -664,3 +668,7 @@ TENorm.__new__
+         return cast(LayerNormInterface, instance)
+ 
+ 
++if HAVE_TE:
++    from transformer_engine.pytorch.module import linear as _te_linear
++
++    _Linear = _te_linear._Linear
+@@ -667,3 +718,7 @@ TELinear
++
++    _Linear.spmd_typecheck = staticmethod(_linear_spmd_typecheck)
++
++
+ class TELinear(te.pytorch.Linear):
+     """Wrapper for the Transformer-Engine's `Linear` layer.
+ 
+@@ -907,3 +962,5 @@ TELinear.backward_dw
+             super().backward_dw()
+ 
+ 
++if HAVE_TE:
++    from transformer_engine.pytorch.module.layernorm_linear import _LayerNormLinear
+@@ -910,3 +979,7 @@ TELayerNormColumnParallelLinear
++
++    _LayerNormLinear.spmd_typecheck = staticmethod(_layernorm_linear_spmd_typecheck)
++
++
+ class TELayerNormColumnParallelLinear(te.pytorch.LayerNormLinear):
+     """Wrapper for the Transformer-Engine's `LayerNormLinear` layer
+     that combines layernorm and linear layers."""
+@@ -1348,6 +1421,12 @@ TERowParallelLinear.backward_dw
+             super().backward_dw()
+ 
+ 
++if HAVE_TE:
++    from transformer_engine.pytorch.attention.dot_product_attention.backends import FusedAttnFunc
++
++    spmd.register_local_autograd_function(FusedAttnFunc)
++
++
+ class TEDotProductAttention(te.pytorch.DotProductAttention):
+     """Wrapper for the Transformer-Engine's `DotProductAttention` layer
+     that also has "flash attention" enabled.
+@@ -2979,7 +3058,10 @@ def fused_apply_rotary_pos_emb_thd(
+     fused_permute_and_pad_with_probs = None
+ 
+ try:
+-    from transformer_engine.pytorch.cross_entropy import parallel_cross_entropy
++    from transformer_engine.pytorch.cross_entropy import (
++        CrossEntropyFunction,
++        parallel_cross_entropy,
++    )
+ 
+     _TE_SUPPORTS_CG_CAPTURABLE = is_te_min_version("2.7.0")
+     current_te_version = get_te_version()
+@@ -3002,3 +3095,6 @@ def _cross_entropy_spmd_typecheck(output, *, inp, target, dist_process_group):
++
++    CrossEntropyFunction.spmd_typecheck = staticmethod(_cross_entropy_spmd_typecheck)
++
+ except ImportError:
+     te_parallel_cross_entropy = None  # type: ignore[assignment, misc]
+ 
+@@ -3054,11 +3150,18 @@ def te_general_gemm(
+ 
+ if HAVE_TE and is_te_min_version("2.7.0.dev"):
+     from transformer_engine.pytorch.router import (  # pylint: disable=unused-import
++        FusedAuxLoss,
++        FusedComputeScoresForMoEAuxLoss,
++        FusedTopkScoreFunction,
+         fused_compute_score_for_moe_aux_loss,
+         fused_moe_aux_loss,
+         fused_topk_with_score_function,
+     )
+ 
++    spmd.register_local_autograd_function(FusedAuxLoss)
++    spmd.register_local_autograd_function(FusedTopkScoreFunction)
++    spmd.register_local_autograd_function(FusedComputeScoresForMoEAuxLoss)
++
+ else:
+     fused_topk_with_score_function = None
+     fused_compute_score_for_moe_aux_loss = None
+</pre>
 <pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="_layernorm_linear_spmd_typecheck" data-hash="a9f03435f4" data-render="added">
 @@ -909,0 +967,12 @@ _layernorm_linear_spmd_typecheck
 +
@@ -745,6 +947,107 @@ TODO: switch DSv3 to global spmd types
 +                spmd.assert_local_type_like(ln_out, inp)
 +        if weight_workspace is not None:
 +            spmd.assert_local_type_like(weight_workspace, weight)
+</pre>
+<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="&lt;module&gt;" data-hash="a43863d06d" data-lines="979-985,1421-1432,3058-3067">
+@@ -10,6 +10,7 @@
+ from contextlib import nullcontext
+ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, cast
+ 
++import spmd_types as spmd
+ import torch
+ import torch.nn.functional as F
+ from packaging.version import Version as PkgVersion
+@@ -396,6 +397,9 @@ TEActivationOp
+ 
+ 
+ if HAVE_TE and is_te_min_version("1.13.0"):
++    from transformer_engine.pytorch.ops.fuser import _OperationFuserAutogradFunction
++
++    spmd.register_local_autograd_function(_OperationFuserAutogradFunction)
+ 
+     class TEActivationOp:
+         """
+@@ -664,3 +668,7 @@ TENorm.__new__
+         return cast(LayerNormInterface, instance)
+ 
+ 
++if HAVE_TE:
++    from transformer_engine.pytorch.module import linear as _te_linear
++
++    _Linear = _te_linear._Linear
+@@ -667,3 +718,7 @@ TELinear
++
++    _Linear.spmd_typecheck = staticmethod(_linear_spmd_typecheck)
++
++
+ class TELinear(te.pytorch.Linear):
+     """Wrapper for the Transformer-Engine's `Linear` layer.
+ 
+@@ -907,3 +962,5 @@ TELinear.backward_dw
+             super().backward_dw()
+ 
+ 
++if HAVE_TE:
++    from transformer_engine.pytorch.module.layernorm_linear import _LayerNormLinear
+@@ -910,3 +979,7 @@ TELayerNormColumnParallelLinear
++
++    _LayerNormLinear.spmd_typecheck = staticmethod(_layernorm_linear_spmd_typecheck)
++
++
+ class TELayerNormColumnParallelLinear(te.pytorch.LayerNormLinear):
+     """Wrapper for the Transformer-Engine's `LayerNormLinear` layer
+     that combines layernorm and linear layers."""
+@@ -1348,6 +1421,12 @@ TERowParallelLinear.backward_dw
+             super().backward_dw()
+ 
+ 
++if HAVE_TE:
++    from transformer_engine.pytorch.attention.dot_product_attention.backends import FusedAttnFunc
++
++    spmd.register_local_autograd_function(FusedAttnFunc)
++
++
+ class TEDotProductAttention(te.pytorch.DotProductAttention):
+     """Wrapper for the Transformer-Engine's `DotProductAttention` layer
+     that also has "flash attention" enabled.
+@@ -2979,7 +3058,10 @@ def fused_apply_rotary_pos_emb_thd(
+     fused_permute_and_pad_with_probs = None
+ 
+ try:
+-    from transformer_engine.pytorch.cross_entropy import parallel_cross_entropy
++    from transformer_engine.pytorch.cross_entropy import (
++        CrossEntropyFunction,
++        parallel_cross_entropy,
++    )
+ 
+     _TE_SUPPORTS_CG_CAPTURABLE = is_te_min_version("2.7.0")
+     current_te_version = get_te_version()
+@@ -3002,3 +3095,6 @@ def _cross_entropy_spmd_typecheck(output, *, inp, target, dist_process_group):
++
++    CrossEntropyFunction.spmd_typecheck = staticmethod(_cross_entropy_spmd_typecheck)
++
+ except ImportError:
+     te_parallel_cross_entropy = None  # type: ignore[assignment, misc]
+ 
+@@ -3054,11 +3150,18 @@ def te_general_gemm(
+ 
+ if HAVE_TE and is_te_min_version("2.7.0.dev"):
+     from transformer_engine.pytorch.router import (  # pylint: disable=unused-import
++        FusedAuxLoss,
++        FusedComputeScoresForMoEAuxLoss,
++        FusedTopkScoreFunction,
+         fused_compute_score_for_moe_aux_loss,
+         fused_moe_aux_loss,
+         fused_topk_with_score_function,
+     )
+ 
++    spmd.register_local_autograd_function(FusedAuxLoss)
++    spmd.register_local_autograd_function(FusedTopkScoreFunction)
++    spmd.register_local_autograd_function(FusedComputeScoresForMoEAuxLoss)
++
+ else:
+     fused_topk_with_score_function = None
+     fused_compute_score_for_moe_aux_loss = None
 </pre>
 <pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="_cross_entropy_spmd_typecheck" data-hash="f0194218c9" data-render="added">
 @@ -2999,3 +3081,14 @@ te_parallel_cross_entropy
@@ -763,7 +1066,7 @@ TODO: switch DSv3 to global spmd types
 +        spmd.assert_type(target, {dist_process_group: spmd.I})
 +        spmd.assert_local_type_like(output, target)
 </pre>
-<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="&lt;module&gt;" data-hash="a43863d06d">
+<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="&lt;module&gt;" data-hash="a43863d06d" data-lines="3095-3100,3150-3167">
 @@ -10,6 +10,7 @@
  from contextlib import nullcontext
  from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, cast

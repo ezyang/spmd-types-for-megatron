@@ -230,21 +230,7 @@
       nav.appendChild(topA);
     }
 
-    // Per file: which distinct hunks (by data-hash) appear in which section.
-    // The count is per document; hunks of the same file in other pages
-    // (e.g. appendix.html) are not visible from here.
-    var hunksOf = {}, sectionsOf = {};
-    Array.prototype.forEach.call(document.querySelectorAll('pre.hunk'), function (pre) {
-      var file = pre.getAttribute('data-file'), key = pre.getAttribute('data-hash') || pre.getAttribute('data-symbol');
-      var sec = pre.closest('section[id]');
-      if (!file || !sec) return;
-      (hunksOf[file] = hunksOf[file] || {})[key] = true;
-      var s = sectionsOf[file] = sectionsOf[file] || {};
-      s[sec.id] = s[sec.id] || { hunks: {}, first: pre };
-      s[sec.id].hunks[key] = true;
-    });
     var titleOf = {};
-
     Array.prototype.forEach.call(heads, function (h) {
       // h2 links to its section; a subsection heading is its own target.
       var target = (h.tagName === 'H2' && h.closest('section[id]')) || h;
@@ -261,8 +247,30 @@
       items.push({ target: target, li: li });
     });
 
+    // A hunk belongs to the nearest h3 before it in its section, else the
+    // section itself.
+    function headingOf(pre) {
+      for (var n = pre.previousElementSibling; n; n = n.previousElementSibling) {
+        if (n.tagName === 'H3' && n.id) return n;
+      }
+      return pre.closest('section[id]');
+    }
+
+    // Per file: which distinct hunks (by data-hash) appear under which heading.
+    // The count is per document; hunks of the same file in other pages
+    // (e.g. appendix.html) are not visible from here.
+    var hunksOf = {}, sectionsOf = {};
+    Array.prototype.forEach.call(document.querySelectorAll('pre.hunk'), function (pre) {
+      var file = pre.getAttribute('data-file'), key = pre.getAttribute('data-hash') || pre.getAttribute('data-symbol');
+      var sec = headingOf(pre);
+      if (!file || !sec) return;
+      (hunksOf[file] = hunksOf[file] || {})[key] = true;
+      var s = sectionsOf[file] = sectionsOf[file] || {};
+      s[sec.id] = s[sec.id] || { hunks: {}, first: pre };
+      s[sec.id].hunks[key] = true;
+    });
+
     items.forEach(function (it) {
-      if (!it.target.matches('section[id]')) return;
       var files = Object.keys(sectionsOf).filter(function (f) { return sectionsOf[f][it.target.id]; }).sort();
       if (!files.length) return;
       var ul = el('ul', 'toc-files');
@@ -281,7 +289,7 @@
           var elsewhere = Object.keys(sectionsOf[f]).filter(function (s) { return s !== it.target.id; })
             .map(function (s) { return titleOf[s] || s; });
           var frac = el('span', 'frac', here + '/' + total);
-          frac.title = here + ' of ' + total + ' hunks in this section; rest under: ' + elsewhere.join(', ');
+          frac.title = here + ' of ' + total + ' hunks under this heading; rest under: ' + elsewhere.join(', ');
           li.appendChild(frac);
           a.title = f + ' (' + frac.title + ')';
         }

@@ -1,0 +1,4 @@
+[submodule "Megatron-LM"]
+	path = Megatron-LM
+	url = https://github.com/ezyang/Megatron-LM.git
+	branch = review/spmd-types-totality-20260901

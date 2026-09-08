@@ -166,8 +166,8 @@
 </pre>
 </section>
 
-<section id="meets-reality">
-<h2>Where the type system meets reality</h2>
+<section id="who-declares-what">
+<h2>Handling FSDP</h2>
 <pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.finish_grad_sync" data-hash="eec13b8de0">
 @@ -544,8 +579,9 @@ DistributedDataParallel.finish_grad_sync
          calls to complete. When overlap_grad_reduce is set to False, calls synchronous
@@ -182,6 +182,10 @@
      def free_overlap_buffers(self):
          """Free overlap param-gather GPU buffers across all bucket groups."""
 </pre>
+</section>
+
+<section id="meets-reality">
+<h2>Where the type system meets reality</h2>
 <pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="_named_non_tensor_args" data-hash="54f01c0848" data-render="added">
 @@ -666,0 +675,10 @@ _named_non_tensor_args
 +

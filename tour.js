@@ -262,7 +262,10 @@
 
   function toc() {
     // Headings and hunks inside the collapsed appendix stay out of the sidebar.
-    var heads = Array.prototype.filter.call(document.querySelectorAll('h2, h3'), function (h) { return !h.closest('details.appendix'); });
+    var heads = Array.prototype.filter.call(
+      document.querySelectorAll('h2, h3, h4'),
+      function (h) { return !h.closest('details.appendix'); }
+    );
     if (!heads.length) return;
     var nav = el('nav', 'toc'), list = el('ul'), items = [];
     var h1 = document.querySelector('h1');
@@ -287,11 +290,11 @@
       items.push({ target: target, li: li });
     });
 
-    // A hunk belongs to the nearest h3 before it in its section, else the
+    // A hunk belongs to the nearest h3/h4 before it in its section, else the
     // section itself.
     function headingOf(pre) {
       for (var n = pre.previousElementSibling; n; n = n.previousElementSibling) {
-        if (n.tagName === 'H3' && n.id) return n;
+        if ((n.tagName === 'H3' || n.tagName === 'H4') && n.id) return n;
       }
       return pre.closest('section[id]');
     }

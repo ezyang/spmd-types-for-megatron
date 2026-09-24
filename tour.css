@@ -1,5 +1,5 @@
 body { max-width: 60em; margin: 2em auto; padding: 0 1em; font: 16px/1.5 Georgia, serif; color: #222; }
-section[id], h3[id] { scroll-margin-top: 1em; }
+section[id], h3[id], h4[id] { scroll-margin-top: 1em; }
 .tour, .tour-hunk { scroll-margin-top: 1em; }
 .toc { display: none; position: fixed; top: 2em; left: 1em; width: 22em; max-height: calc(100vh - 3em); overflow-y: auto; font: 13px/1.4 Helvetica, Arial, sans-serif; }
 .toc ul { list-style: none; margin: 0; padding: 0; border-left: 2px solid #eee; }
@@ -10,6 +10,8 @@ section[id], h3[id] { scroll-margin-top: 1em; }
 .toc a.toc-title { font-weight: bold; color: #222; margin: 0 0 6px 0; border: 0; }
 .toc li.toc-h3 > a { padding-left: 22px; }
 .toc li.toc-h3 > ul.toc-files a { padding-left: 34px; }
+.toc li.toc-h4 > a { padding-left: 34px; }
+.toc li.toc-h4 > ul.toc-files a { padding-left: 46px; }
 .toc ul.toc-files { border: 0; margin: 0 0 4px 0; font: 11px/1.5 ui-monospace, Menlo, Consolas, monospace; }
 .toc ul.toc-files li { display: flex; align-items: baseline; }
 .toc ul.toc-files a:hover .base { color: #0550ae; }

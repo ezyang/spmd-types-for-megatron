@@ -1497,7 +1497,15 @@ rule from that.
 
 <section id="one-gpu">
 <h2>Checking a 256-GPU job on one GPU</h2>
-<!-- TODO: typecheck() sets the mesh and forces eager so torch.compile does not hide ops. PyTorch's fake process-group backend impersonates one rank of the MLPerf DeepSeek-V3 job. First the trick and the three small unit tests that use it directly; then the fake HybridEP transport that lets the real dispatcher run without NVSHMEM; then the job itself: config, model, DDP wrap, and the two pipeline chunks that cover every layer structure. -->
+<p>Verified on 2026-09-23 on an NVIDIA GB300 (compute capability 10.3): both the
+<a href="#tests/unit_tests/spmd/test_checker.py::test_mlperf_deepseek_v3_te_config_typechecks">MoE/MTP/output chunk</a>
+and the
+<a href="#tests/unit_tests/spmd/test_checker.py::test_mlperf_deepseek_v3_dense_embedding_chunk_typechecks">embedding/dense chunk</a>
+passed with <code>typecheck()</code> and real CUDA/Transformer Engine kernels.
+Each test runs one process against a fake 256-rank process group; this checks
+the sharding/type annotations, not real multi-GPU DeepEP communication.
+Environment: PyTorch 2.14.0+cu130 (CUDA 13.0), Transformer Engine
+2.15.0+42b84005, DeepEP 1.2.1+58397ea.</p>
 <pre class="hunk" data-file="megatron/core/spmd/checker.py" data-symbol="typecheck" data-hash="000148b95b" data-render="added">
 @@ -0,0 +13,13 @@ typecheck
 +

@@ -146,7 +146,7 @@ the standard local SPMD propagation rules can apply.</p>
 +    spmd.register_local_autograd_function(function)
 </pre>
 
-<p><code>spmd_type</code>'s generic local SPMD propagation rules say things like:</p>
+<p><code>spmd_types</code>' generic local SPMD propagation rules say things like:</p>
 <ul>
 <li><code>I</code> (<code>Invariant</code>: the FWD value and gradient are
 identical across ranks) mixed with <code>I</code> gives <code>I</code>.</li>

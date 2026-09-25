@@ -317,7 +317,7 @@ out.</p>
 </p>
 
 <p>
-     We do this for Megatron's handling of grad accumulation & synchronization, and RNG state tracking:
+     Specifically, we do this to get around Megatron's handling of grad accumulation & synchronization:
 </p>
 
 <pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel._make_backward_post_hook.hook" data-hash="e837028bb2">

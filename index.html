@@ -166,17 +166,13 @@ documentation</a>.</p>
 
 <section id="who-declares-what">
 <h2>Parameter conventions</h2>
-<p>Parameter annotations are more involved on model-parallel axes such as TP, EP,
-and ETP: the type depends on whether a parameter is sharded and, if so, which
-tensor dimension is partitioned. The model or framework needs to specify that
-placement, preferably using its existing sharding metadata.</p>
-
-<p>Data-parallel axes such as DP, CP, and EDP usually follow a standard wrapper
-convention. Ranks compute with the same parameter values on different data, so
-their parameter gradients are partial and must be combined across the data
-group. <code>spmd.R</code> expresses a replicated forward value whose backward
-gradient is partial (<code>spmd.P</code>), making the required gradient reduction
-visible to the type checker.</p>
+<p>SPMD typechecking is based on type propagation, so all starting tensors
+(inputs, buffers, params) have to be annotated. Param annotations are more
+involved on model-parallel axes (e.g. TP, EP, ETP). Fortunately in local SPMD
+typechecking, complete correctness for <code>spmd.S(dim)</code> usage (tensor dim
+sharding) isn't strictly needed, as it will decompose to <code>spmd.V</code>, but
+we can read <code>partition_dim</code> attributes off of parameters to figure this
+out. In general, use sharding metadata to provide this.</p>
 
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dense_parameter" data-hash="39641952d1" data-render="added">
 @@ -0,0 +76,11 @@ _annotate_dense_parameter
@@ -221,6 +217,12 @@ visible to the type checker.</p>
 +        return spmd.R
 +    return spmd.I if tensor.requires_grad else spmd.R
 </pre>
+<p>We'll discuss more in the FSDP section, but data-parallel axes (e.g. DP, CP,
+EDP) usually follow a standard convention. Since each rank on a (DDP/FSDP/HSDP)
+axis uses the same params, but sees different data at compute-time, a BWD gradient
+all-reduce is required to aggregate gradient contributions across data/ranks.
+This implies a <code>spmd.R</code> typing (replicate FWD, partial BWD).</p>
+
 <h3>TP-local vocabulary metadata</h3>
 <p><code>VocabParallelEmbedding</code> stores its local vocabulary range as plain
 Python integers. Those bounds vary across TP ranks and affect which token ids

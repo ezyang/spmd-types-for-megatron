@@ -75,16 +75,17 @@ TODO: switch DSv3 to global spmd types
 <section id="what-type-checks-means">
 <h2>Annotating custom autograd functions</h2>
 
-<p>Every custom autograd function in your codebase needs some annotation
-indicating how <code>spmd_types</code> can typecheck it. These annotations
-constitute "trusted code" (<code>spmd_types</code> typechecking will not
-directly tell you if you've done it correctly, although you can use
-<code>spmd.rulecheck</code> to numerically test that an annotation is correct.
-However, the correctness of an annotation can be evaluated by only looking
-at the custom autograd function; the <code>spmd_types</code> typechecker then ensures
-that how you've put these functions together in a global codebase is coherent.</p>
+<p>Custom autograd functions are black boxes to <code>spmd_types</code>: the
+typechecker cannot see what computation or collectives happen inside them, so it
+cannot infer how types propagate through them. Every custom autograd function
+used in a codebase therefore needs a typechecking annotation. These annotations
+constitute trusted code: the typechecker does not prove them correct (though
+<code>spmd.rulecheck</code> can test them numerically). An annotation's
+correctness must be judged against the autograd function's compute behavior;
+the typechecker then ensures that the functions compose coherently in a single
+forward-backward pass.</p>
 
-<h3>Local functions</h3>
+<h3>Local autograd functions</h3>
 
 <p>If you are doing only local SPMD typechecking, it is very simple to add
 support for custom autograd functions that don't do any communications; we

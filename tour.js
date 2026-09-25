@@ -49,8 +49,156 @@
     return e;
   }
 
+  var PY_KEYWORDS = {};
+  ('and as assert async await break class continue def del elif else except finally '
+    + 'for from global if import in is lambda nonlocal not or pass raise return '
+    + 'try while with yield match case').split(/\s+/).forEach(function (word) {
+      PY_KEYWORDS[word] = true;
+    });
+  var PY_BUILTINS = {};
+  ('abs all any ascii bin bool breakpoint bytearray bytes callable chr classmethod '
+    + 'compile complex delattr dict dir divmod enumerate eval exec filter float '
+    + 'format frozenset getattr globals hasattr hash help hex id input int isinstance '
+    + 'issubclass iter len list locals map max memoryview min next object oct open '
+    + 'ord pow print property range repr reversed round set setattr slice sorted '
+    + 'staticmethod str sum super tuple type vars zip').split(/\s+/).forEach(function (word) {
+      PY_BUILTINS[word] = true;
+    });
+  var PY_STRING_PREFIXES = { r: true, u: true, b: true, f: true, br: true, rb: true, fr: true, rf: true };
+  var PY_NUMBER_RE = /^(?:0[xX][0-9a-fA-F](?:_?[0-9a-fA-F])*|0[bB][01](?:_?[01])*|0[oO][0-7](?:_?[0-7])*|(?:\d(?:_?\d)*(?:\.(?:\d(?:_?\d)*)?)?|\.\d(?:_?\d)*)(?:[eE][+-]?\d(?:_?\d)*)?[jJ]?)/;
+  var PY_OPERATOR_RE = /^(?:\*\*=?|\/\/?=?|<<=?|>>=?|:=|->|==|!=|<=|>=|\+=|-=|\*=|%=|@=|&=|\|=|\^=|[+\-*\/%@&|^~<>:=!])/;
+
+  function pythonSetHas(set, word) {
+    return Object.prototype.hasOwnProperty.call(set, word);
+  }
+
+  function pythonStringStart(text, at) {
+    var quoteAt = at, ch = text.charAt(quoteAt), prefix = '';
+    if (ch !== "'" && ch !== '"' && (at === 0 || !/[A-Za-z0-9_]/.test(text.charAt(at - 1)))) {
+      for (var size = 2; size >= 1; size--) {
+        var candidate = text.substr(at, size).toLowerCase();
+        var next = text.charAt(at + size);
+        if (pythonSetHas(PY_STRING_PREFIXES, candidate) && (next === "'" || next === '"')) {
+          prefix = text.substr(at, size);
+          quoteAt = at + size;
+          ch = next;
+          break;
+        }
+      }
+    }
+    if (ch !== "'" && ch !== '"') return null;
+    var quote = text.substr(quoteAt, 3) === ch + ch + ch ? ch + ch + ch : ch;
+    return { start: at, quote: quote, prefix: prefix };
+  }
+
+  function pythonQuoteEnd(text, quote, from) {
+    for (var i = from; i <= text.length - quote.length; i++) {
+      if (text.substr(i, quote.length) !== quote) continue;
+      var slashes = 0;
+      for (var j = i - 1; j >= 0 && text.charAt(j) === '\\'; j--) slashes++;
+      if (slashes % 2 === 0) return i;
+    }
+    return -1;
+  }
+
+  function appendPythonTokens(cell, text, state) {
+    var fragment = document.createDocumentFragment(), plain = '', i = 0, expectDef = null;
+    function flushPlain() {
+      if (plain) fragment.appendChild(document.createTextNode(plain));
+      plain = '';
+    }
+    function addToken(kind, value) {
+      flushPlain();
+      fragment.appendChild(el('span', 'tok-' + kind, value));
+    }
+
+    while (i < text.length) {
+      if (state.triple) {
+        var tripleEnd = pythonQuoteEnd(text, state.triple, i);
+        if (tripleEnd < 0) {
+          addToken('string', text.slice(i));
+          i = text.length;
+        } else {
+          var tripleStop = tripleEnd + state.triple.length;
+          addToken('string', text.slice(i, tripleStop));
+          i = tripleStop;
+          state.triple = null;
+        }
+        continue;
+      }
+
+      if (text.charAt(i) === '#') {
+        addToken('comment', text.slice(i));
+        i = text.length;
+        continue;
+      }
+
+      var stringStart = pythonStringStart(text, i);
+      if (stringStart) {
+        var quoteStart = i + stringStart.prefix.length + stringStart.quote.length;
+        var quoteEnd = pythonQuoteEnd(text, stringStart.quote, quoteStart);
+        if (stringStart.quote.length === 3 && quoteEnd < 0) {
+          state.triple = stringStart.quote;
+          addToken('string', text.slice(i));
+          i = text.length;
+        } else {
+          var stringStop = quoteEnd < 0 ? text.length : quoteEnd + stringStart.quote.length;
+          addToken('string', text.slice(i, stringStop));
+          i = stringStop;
+        }
+        continue;
+      }
+
+      var tail = text.slice(i), number = PY_NUMBER_RE.exec(tail);
+      if (number) {
+        addToken('number', number[0]);
+        i += number[0].length;
+        expectDef = null;
+        continue;
+      }
+
+      var identifier = /^[A-Za-z_][A-Za-z0-9_]*/.exec(tail);
+      if (identifier) {
+        var word = identifier[0], kind = null;
+        if (expectDef) {
+          kind = expectDef;
+          expectDef = null;
+        } else if (word === 'def') {
+          kind = 'keyword';
+          expectDef = 'function';
+        } else if (word === 'class') {
+          kind = 'keyword';
+          expectDef = 'class';
+        } else if (pythonSetHas(PY_KEYWORDS, word)) {
+          kind = 'keyword';
+        } else if (word === 'True' || word === 'False' || word === 'None' || word === 'Ellipsis' || word === 'NotImplemented') {
+          kind = 'constant';
+        } else if (pythonSetHas(PY_BUILTINS, word)) {
+          kind = 'builtin';
+        }
+        if (kind) addToken(kind, word);
+        else plain += word;
+        i += word.length;
+        continue;
+      }
+
+      var operator = PY_OPERATOR_RE.exec(tail);
+      if (operator) {
+        addToken('operator', operator[0]);
+        i += operator[0].length;
+        expectDef = null;
+        continue;
+      }
+
+      plain += text.charAt(i++);
+    }
+    flushPlain();
+    cell.appendChild(fragment);
+  }
+
   function render(pre, box, grouped, mode) {
     var file = pre.getAttribute('data-file') || '', symbol = pre.getAttribute('data-symbol') || '';
+    var isPython = /\.py$/i.test(file), oldPythonState = { triple: null }, newPythonState = { triple: null };
     var only = lineSet(pre.getAttribute('data-lines'));
     var collapse = pre.hasAttribute('data-collapse');
     var fold = pre.hasAttribute('data-fold');
@@ -109,7 +257,11 @@
     // (per-symbol units of a brand-new file) is contiguous: no header row.
     var prev = box.tourLast || null, pendingSep = null, foldRun = null, foldRows = [];
     kept.forEach(function (r) {
-      if (r.sep) { pendingSep = r; return; }
+      if (r.sep) {
+        pendingSep = r;
+        if (isPython) { oldPythonState.triple = null; newPythonState.triple = null; }
+        return;
+      }
       var gap = prev && !((r.old != null && prev.old != null && r.old === prev.old + 1) || (r.new != null && prev.new != null && r.new === prev.new + 1) || (r.at != null && r.at === prev.at) || (prev.tag === '-' && r.new === prev.at));
       if (!prev || gap || (pendingSep && !prev.fromBox)) {
         // GitHub-style hunk header: tinted gutter, then "@@ -a,b +c,d @@ context".
@@ -157,7 +309,14 @@
       }
       tr.appendChild(tdNew);
       if (mode !== 'added') tr.appendChild(el('td', 'mk', r.tag === ' ' ? '' : r.tag));
-      var code = el('td', 'code', r.text);
+      var code = el('td', 'code');
+      if (isPython) {
+        var pythonState = mode === 'diff' && r.tag === '-' ? oldPythonState : newPythonState;
+        appendPythonTokens(code, r.text, pythonState);
+        if (mode === 'diff' && r.tag === ' ') oldPythonState.triple = newPythonState.triple;
+      } else {
+        code.textContent = r.text;
+      }
       tr.appendChild(code);
       var d = r.tag === '+' && DEF_RE.exec(r.text);
       if (d) (defs[d[1]] = defs[d[1]] || []).push(code);
@@ -186,17 +345,25 @@
     Object.keys(defs).forEach(function (n) {
       if (defs[n].length !== 1) return;
       var td = defs[n][0], m = DEF_RE.exec(td.textContent), at = m[0].length - n.length;
-      var span = el('span', 'def', n);
-      span.id = 'def-' + n;
-      td.textContent = '';
-      td.appendChild(document.createTextNode(m[0].slice(0, at)));
-      td.appendChild(span);
-      td.appendChild(document.createTextNode(m.input.slice(m[0].length)));
+      var highlightedName = td.querySelector('.tok-function');
+      if (highlightedName && highlightedName.textContent === n) {
+        highlightedName.classList.add('def');
+        highlightedName.id = 'def-' + n;
+      } else {
+        var span = el('span', 'def', n);
+        span.id = 'def-' + n;
+        td.textContent = '';
+        td.appendChild(document.createTextNode(m[0].slice(0, at)));
+        td.appendChild(span);
+        td.appendChild(document.createTextNode(m.input.slice(m[0].length)));
+      }
       names[n] = '#def-' + n;
     });
     if (!Object.keys(names).length) return;
 
     function linkText(node) {
+      var parent = node.parentNode;
+      if (parent.closest && parent.closest('.tok-string, .tok-comment, .def')) return;
       var text = node.nodeValue, frag = null, last = 0, m;
       IDENT_RE.lastIndex = 0;
       while ((m = IDENT_RE.exec(text))) {
@@ -217,8 +384,21 @@
       node.parentNode.replaceChild(frag, node);
     }
 
+    function linkCode(node) {
+      Array.prototype.slice.call(node.childNodes).forEach(function (child) {
+        if (child.nodeType === 3) {
+          linkText(child);
+        } else if (child.nodeType === 1 && child.tagName !== 'A'
+          && !child.classList.contains('tok-string')
+          && !child.classList.contains('tok-comment')
+          && !child.classList.contains('def')) {
+          linkCode(child);
+        }
+      });
+    }
+
     Array.prototype.forEach.call(document.querySelectorAll('.tour tr:not(.sep) td.code'), function (td) {
-      Array.prototype.slice.call(td.childNodes).forEach(function (c) { if (c.nodeType === 3) linkText(c); });
+      linkCode(td);
     });
     // Prose: <code>NAME</code> or <code>NAME()</code>, unless already a link.
     Array.prototype.forEach.call(document.querySelectorAll('code'), function (c) {

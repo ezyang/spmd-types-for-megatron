@@ -44,6 +44,13 @@ pre.hunk { display: none; }
 .tour tr.sep td.ln { background: #dbedff; }
 .tour tr.fold td { background: #f6f8fa; color: #0550ae; padding: 3px 8px 3px 2.6em; cursor: pointer; border-top: 1px dashed #d0d7de; border-bottom: 1px dashed #d0d7de; user-select: none; }
 .tour tr.fold:hover td { background: #ddf4ff; }
+.tour td.code .tok-keyword, .tour td.code .tok-operator { color: #a40e26; }
+.tour td.code .tok-keyword { font-weight: 600; }
+.tour td.code .tok-string { color: #0a3069; }
+.tour td.code .tok-number, .tour td.code .tok-constant { color: #0550ae; }
+.tour td.code .tok-builtin, .tour td.code .tok-function { color: #8250df; }
+.tour td.code .tok-class { color: #953800; }
+.tour td.code .tok-comment { color: #6e7781; font-style: italic; }
 .tour td.code a.ref { color: inherit; text-decoration: underline dotted #9a9a9a; text-underline-offset: 2px; }
 .tour td.code a.ref:hover { color: #0550ae; text-decoration-style: solid; }
 a.ref > code { color: #0550ae; }

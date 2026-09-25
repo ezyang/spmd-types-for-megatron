@@ -261,13 +261,15 @@
     });
   }
 
-  // Two hunks are adjacent when only whitespace and comments sit between them.
+  // Two hunks are adjacent when they share a parent and only whitespace and
+  // comments sit between them. Do not group across section/container boundaries.
   function adjacent(a, b) {
+    if (a.parentNode !== b.parentNode) return false;
     if (a.getAttribute('data-file') !== b.getAttribute('data-file')) return false;
     for (var n = a.nextSibling; n && n !== b; n = n.nextSibling) {
       if (n.nodeType === 1 || (n.nodeType === 3 && n.textContent.trim())) return false;
     }
-    return true;
+    return n === b;
   }
 
   function renderAll() {

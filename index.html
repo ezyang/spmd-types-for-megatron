@@ -220,6 +220,24 @@ out.</p>
 +        return spmd.R
 +    return spmd.I if tensor.requires_grad else spmd.R
 </pre>
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="model_parallel_mesh" data-hash="5209209e9e" data-render="added">
+@@ -0,0 +87,15 @@ model_parallel_mesh
++
++
++def model_parallel_mesh() -&gt; dict[str, spmd.MeshAxis]:
++    """Return the mesh Megatron's dense layers are typed against.
++
++    Megatron does not build a DeviceMesh; it hands out process groups from
++    ``parallel_state``. The three that matter for typing dense computation are
++    tensor parallel, data parallel (without context parallel folded in), and
++    context parallel.
++    """
++    return {
++        "TP": spmd.MeshAxis.of(parallel_state.get_tensor_model_parallel_group()),
++        "DP": spmd.MeshAxis.of(parallel_state.get_data_parallel_group(with_context_parallel=False)),
++        "CP": spmd.MeshAxis.of(parallel_state.get_context_parallel_group()),
++    }
+</pre>
 
 <h3>Handling FSDP</h3>
 
@@ -394,24 +412,6 @@ constants), while DP and CP are replicated.</p>
 +        tensor,
 +        {"TP": tensor_parallel_type or _tensor_parallel_type(tensor), "DP": spmd.R, "CP": spmd.R},
 +    )
-</pre>
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="model_parallel_mesh" data-hash="5209209e9e" data-render="added">
-@@ -0,0 +87,15 @@ model_parallel_mesh
-+
-+
-+def model_parallel_mesh() -&gt; dict[str, spmd.MeshAxis]:
-+    """Return the mesh Megatron's dense layers are typed against.
-+
-+    Megatron does not build a DeviceMesh; it hands out process groups from
-+    ``parallel_state``. The three that matter for typing dense computation are
-+    tensor parallel, data parallel (without context parallel folded in), and
-+    context parallel.
-+    """
-+    return {
-+        "TP": spmd.MeshAxis.of(parallel_state.get_tensor_model_parallel_group()),
-+        "DP": spmd.MeshAxis.of(parallel_state.get_data_parallel_group(with_context_parallel=False)),
-+        "CP": spmd.MeshAxis.of(parallel_state.get_context_parallel_group()),
-+    }
 </pre>
 </section>
 

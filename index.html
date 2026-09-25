@@ -151,7 +151,7 @@ identical across ranks) mixed with <code>I</code> gives <code>I</code>.</li>
 <li><code>R</code> (<code>Replicate</code>: identical FWD values, but
 gradients pend reduction) combined with <code>R</code> gives <code>R</code>.</li>
 <li><code>R</code> combined with <code>V</code> (<code>Varying</code>: both
-FWD &amp; BWD values can vary) gives <code>V</code>.</li>
+FWD &amp; BWD values can vary, e.g. sharded / different shapes) gives <code>V</code>.</li>
 <li><code>P</code> (<code>Partial</code>: pending reduction) propagation
 depends on the class of op.</li>
 </ul>

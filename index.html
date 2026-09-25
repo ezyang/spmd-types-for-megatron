@@ -55,19 +55,20 @@ to any Megatron-style codebase.)  The general recipe is:</p>
 <li>Make your codebase support fake process group, if it doesn't already.  This allows
 you to run your full-size model code on a single GPU, which is good for testing
 and memory analysis. (Megatron already supports this, so it is omitted in this post.)</li>
-<li>Put local-autograd registrations and custom <code>spmd_typecheck</code> contracts in a sidecar rule module. The checker imports that module only for a checked run, leaving operator implementations free of typechecking code.</li>
+<li>For each custom autograd function in your codebase, either decorate it with <code>register_local_autograd_function</code> (if it's a purely local autograd function and you only care about local SPMD typechecking) or add a static method <code>spmd_typecheck</code> describing its typing rule (if it's a distributed collective, or it's local but you want to do global SPMD typechecking). These registrations can live in a separate module that the SPMD typechecking tests load, keeping typechecking hooks out of model code.</li>
 <li>Write separate rules for annotating model inputs, parameters, and boundaries with appropriate types. This requires knowing a little bit about how distributed wrappers (e.g., FSDP) work. Megatron keeps these annotations in <code>megatron.core.spmd.annotations</code>; its custom FSDP/DDP wrappers state their own replication promises.</li>
 <li>Write a unit test (with fake PG) which runs your model code with typechecking enabled.</li>
 </ol>
 
-<p>Megatron keeps these annotations out of most operator implementations:
-model and input-boundary annotations live in <code>megatron.core.spmd.annotations</code>,
-while operator contracts and local-autograd registrations live in the sidecar
-<code>megatron.core.spmd.spmd_rules</code>. The sidecar is imported only when entering
-<code>typecheck()</code>, so ordinary Megatron execution does not attach SPMD hooks.
-Only files with a scoped <code>no_typecheck()</code> region still import
-<code>spmd_types</code> directly among the operator/model implementation files;
-the sidecar and annotation helpers of course use the API themselves.</p>
+<p>You can import <code>spmd_types as spmd</code> in each file that needs it, and
+keep each autograd function's registration or <code>spmd_typecheck</code> rule
+alongside its implementation. Or, to keep typechecking separate from model code,
+you can centralize registrations and contracts in a rules module that is imported
+only when typechecking runs. Megatron uses
+<code>megatron.core.spmd.annotations</code> for model and input-boundary annotations,
+and <code>megatron.core.spmd.spmd_rules</code> for operator contracts and
+local-autograd registrations. Ordinary model execution therefore does not load
+those typechecking hooks.</p>
 
 
 

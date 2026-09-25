@@ -62,15 +62,8 @@ and memory analysis. (Megatron already supports this, so it is omitted in this p
 
 <p>You can import <code>spmd_types as spmd</code> in each file that needs it, and
 keep each autograd function's registration or <code>spmd_typecheck</code> rule
-alongside its implementation. Or, to keep typechecking separate from model code,
-you can centralize registrations and contracts in a rules module that is imported
-only when typechecking runs. Megatron uses
-<code>megatron.core.spmd.annotations</code> for model and input-boundary annotations,
-and <code>megatron.core.spmd.spmd_rules</code> for operator contracts and
-local-autograd registrations. Ordinary model execution therefore does not load
-those typechecking hooks.</p>
-
-
+alongside its implementation, or, if you prefer keeping typechecking separate from compute definitions,
+you can maintain a separate rules registry module, only imported when typechecking tests run.</p>
 
 <p>This patch specifically addresses the subset of changes needed to run DeepSeek-V3
 in the recommended configuration as published by Megatron-Bridge.</p>
@@ -82,11 +75,14 @@ TODO: switch DSv3 to global spmd types
 <section id="what-type-checks-means">
 <h2>Annotating custom autograd functions</h2>
 
-<p>Every custom autograd function needs a contract describing how
-<code>spmd_types</code> should type it. Such rules are trusted code: the checker
-does not prove the rule itself correct (though <code>spmd.rulecheck</code> can
-numerically test one), but it does ensure that the functions compose coherently
-through the model.</p>
+<p>Every custom autograd function in your codebase needs some annotation
+indicating how <code>spmd_types</code> can typecheck it. These annotations
+constitute "trusted code" (<code>spmd_types</code> typechecking will not
+directly tell you if you've done it correctly, although you can use
+<code>spmd.rulecheck</code> to numerically test that an annotation is correct.
+However, the correctness of an annotation can be evaluated by only looking
+at the custom autograd function; the <code>spmd_types</code> typechecker then ensures
+that how you've put these functions together in a global codebase is coherent.</p>
 
 <h3>Local functions</h3>
 
@@ -295,7 +291,7 @@ its TP (and other model-parallel) placement.</p>
 @@ -357,3 +358,8 @@ DistributedDataParallel.__init__
              self.enable_forward_pre_hook()
          self.overlap_param_gather_with_optimizer_step = False
- 
+
 +    def forward(self, *inputs, **kwargs):
 +        """Calls the wrapped module's forward() method."""
 +        if spmd.is_type_checking():
@@ -514,7 +510,7 @@ setup, and host RNG bookkeeping this way:</p>
 +        expert_output = leave_expert_parallel_region(expert_output)
          assert mlp_bias is None, f"mlp_bias is not supported for {type(self.token_dispatcher)}"
          output = self.token_dispatcher.combine_preprocess(expert_output)
- 
+
 </pre>
 <p>Expert parameters are annotated on the expert/sparse mesh rather than the dense mesh: each EP rank owns different experts, so parameters vary across EP, while ETP records how each expert's weight is partitioned (for example, sharded on a tensor dimension). EDP replication is left to the gradient-reduction wrapper to promise. This keeps the model's expert-parallel placement explicit without pretending expert weights are ordinary dense TP shards.</p>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_is_expert_parallel_parameter" data-hash="451fffc44a" data-render="added">
@@ -1033,9 +1029,8 @@ chunks.</p>
 
 <section id="appendix">
 <h2>Appendix</h2>
-<p>The remaining hunks show the complete rule registry and supporting details
-that are too repetitive for the main narrative. Collapsed by default; the summary
-is a diffstat of what is inside.</p>
+<p>The remaining hunks. Each repeats a pattern already shown above, grouped under
+the same headings. Collapsed by default; the summary is a diffstat of what is inside.</p>
 <details class="appendix">
 <summary></summary>
 
@@ -1055,8 +1050,8 @@ is a diffstat of what is inside.</p>
 <pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_is_fake_process_group" data-hash="849b6f7202" data-render="added">
 @@ -350,3 +352,6 @@ reset_hybrid_ep_buffer
      _hybrid_ep_buffer = None
- 
- 
+
+
 +def _is_fake_process_group(group: torch.distributed.ProcessGroup) -&gt; bool:
 +    """Whether ``group`` uses PyTorch's fake backend, which performs no communication."""
 +    return torch.distributed.get_backend(group) == "fake"
@@ -1346,7 +1341,7 @@ is a diffstat of what is inside.</p>
 <pre class="hunk" data-file="pyproject.toml" data-symbol="&lt;hunk 1&gt;" data-hash="e5a349199a">
 @@ -63,6 +63,10 @@ Download = "https://github.com/NVIDIA/Megatron-LM/releases"
  Homepage = "https://github.com/NVIDIA/Megatron-LM"
- 
+
  [project.optional-dependencies]
 +spmd = [
 +    "spmd_types==0.2.5",
@@ -1405,7 +1400,7 @@ is a diffstat of what is inside.</p>
  ]
 -provides-extras = ["training", "mlm", "dev", "lts"]
 +provides-extras = ["spmd", "training", "mlm", "dev", "lts"]
- 
+
  [package.metadata.requires-dev]
  build = [
 </pre>
@@ -1423,7 +1418,7 @@ is a diffstat of what is inside.</p>
 @@ -7797,6 +7803,15 @@ wheels = [
      { url = "https://files.pythonhosted.org/packages/52/a7/d2782e4e3f77c8450f727ba74a8f12756d5ba823d81b941f1b04da9d033a/sphinxcontrib_serializinghtml-2.0.0-py3-none-any.whl", hash = "sha256:6e2cb0eef194e10c27ec0023bfeb25badbbb5868244cf5bc5bdc04e4464bf331", size = 92072, upload-time = "2024-07-29T01:10:08.203Z" },
  ]
- 
+
 +[[package]]
 +name = "spmd-types"
 +version = "0.2.5"
@@ -1478,10 +1473,10 @@ is a diffstat of what is inside.</p>
 @@ -4,6 +4,7 @@
  from contextlib import contextmanager
  from typing import Optional
- 
+
 +import spmd_types as spmd
  import torch
- 
+
  from ..config_logger import has_config_logger_enabled, log_config_to_disk
 </pre>
 
@@ -1489,7 +1484,7 @@ is a diffstat of what is inside.</p>
 @@ -9,6 +9,7 @@
  from collections.abc import Callable
  from typing import Any, Optional, TypeVar, Union
- 
+
 +import spmd_types as spmd
  import torch
  from torch import _C
@@ -1499,24 +1494,24 @@ is a diffstat of what is inside.</p>
 @@ -11,6 +11,7 @@
  from math import ceil
  from typing import Optional, Protocol, Tuple
- 
+
 +import spmd_types as spmd
  import torch
  import torch.nn.functional as F
- 
+
 </pre>
 <pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="&lt;module&gt;" data-hash="aaf27cd0bf">
 @@ -15,8 +15,10 @@
  except ImportError:
      HAVE_DEEP_EP = False
- 
+
 +import spmd_types as spmd
  import torch
- 
+
 +
  _buffer = None
- 
- 
+
+
 </pre>
 <pre class="hunk" data-file="megatron/core/transformer/moe/moe_layer.py" data-symbol="&lt;module&gt;" data-hash="f3c8602340">
 @@ -12,6 +12,7 @@
@@ -1534,18 +1529,22 @@ is a diffstat of what is inside.</p>
 @@ -45,6 +45,7 @@
  from megatron.core import parallel_state
  from megatron.core.dist_checkpointing.mapping import ShardedTensor
- 
+
 +
  try:
      from packaging.version import Version as PkgVersion
- 
+
 </pre>
 
 
 <h3>Typecheck–compute separation</h3>
 
-<p>Custom collectives need explicit contracts because their forward and backward
-collectives alter the SPMD types. These rules now sit in
+<p>Custom collectives need some special handling, since they interact with types
+in a non-trivial way. Fortunately, there are not that many interesting
+collectives, and we provide some helper functions for the semantics of common
+collectives which you can use to conveniently write your rules.</p>
+
+<p>In Megatron, these rules now sit in
 <code>spmd_rules.py</code>, alongside the rules for tensor-parallel linears,
 Transformer Engine operators, MoE loss scalers, and local autograd functions.
 The forward implementations stay focused on computation. The
@@ -1869,17 +1868,17 @@ there too, as do the identity-on-output rules for the MoE and MTP loss scalers.<
 
 <pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="&lt;module&gt;" data-hash="9455059fc5">
 @@ -396,6 +396,7 @@ TEActivationOp
- 
- 
+
+
  if HAVE_TE and is_te_min_version("1.13.0"):
 +    from transformer_engine.pytorch.ops.fuser import _OperationFuserAutogradFunction
- 
+
      class TEActivationOp:
          """
 @@ -664,6 +665,12 @@ TENorm.__new__
          return cast(LayerNormInterface, instance)
- 
- 
+
+
 +if HAVE_TE:
 +    from transformer_engine.pytorch.module import linear as _te_linear
 +
@@ -1888,11 +1887,11 @@ there too, as do the identity-on-output rules for the MoE and MTP loss scalers.<
 +
  class TELinear(te.pytorch.Linear):
      """Wrapper for the Transformer-Engine's `Linear` layer.
- 
+
 @@ -907,6 +914,10 @@ TELinear.backward_dw
              super().backward_dw()
- 
- 
+
+
 +if HAVE_TE:
 +    from transformer_engine.pytorch.module.layernorm_linear import _LayerNormLinear
 +
@@ -1902,8 +1901,8 @@ there too, as do the identity-on-output rules for the MoE and MTP loss scalers.<
      that combines layernorm and linear layers."""
 @@ -1348,6 +1359,10 @@ TERowParallelLinear.backward_dw
              super().backward_dw()
- 
- 
+
+
 +if HAVE_TE:
 +    from transformer_engine.pytorch.attention.dot_product_attention.backends import FusedAttnFunc
 +
@@ -1913,18 +1912,18 @@ there too, as do the identity-on-output rules for the MoE and MTP loss scalers.<
      that also has "flash attention" enabled.
 @@ -2979,7 +2994,10 @@ def fused_apply_rotary_pos_emb_thd(
      fused_permute_and_pad_with_probs = None
- 
+
  try:
 -    from transformer_engine.pytorch.cross_entropy import parallel_cross_entropy
 +    from transformer_engine.pytorch.cross_entropy import (
 +        CrossEntropyFunction,
 +        parallel_cross_entropy,
 +    )
- 
+
      _TE_SUPPORTS_CG_CAPTURABLE = is_te_min_version("2.7.0")
      current_te_version = get_te_version()
 @@ -3054,6 +3072,9 @@ def te_general_gemm(
- 
+
  if HAVE_TE and is_te_min_version("2.7.0.dev"):
      from transformer_engine.pytorch.router import (  # pylint: disable=unused-import
 +        FusedAuxLoss,

@@ -220,28 +220,23 @@ out.</p>
 +        return spmd.R
 +    return spmd.I if tensor.requires_grad else spmd.R
 </pre>
-<p>We'll discuss more in the FSDP section, but data-parallel axes (e.g. DP, CP,
-EDP) usually follow a standard convention. Since each rank on a (DDP/FSDP/HSDP)
-axis uses the same params, but sees different data at compute-time, a BWD gradient
-all-reduce is required to aggregate gradient contributions across data/ranks.
-This implies a <code>spmd.R</code> typing (replicate FWD, partial BWD).</p>
 
 <h3>Handling FSDP</h3>
-<p>FSDP's distributed-storage strategy and pre-forward preparation are its own
-business: it may all-gather or unshard parameters, cast or quantize tensors, or
-prepare inputs however it needs. The typechecker need not follow those wrapper
-internals; it needs the compute-ready parameters to have the right type. On
-FSDP-owned axes, that means <code>spmd.R</code>: compute sees replicated values,
-and the wrapper handles the resulting partial gradients. Types on model-parallel
-axes such as TP remain the model's responsibility.</p>
 
-<p>A custom FSDP/DDP wrapper can assert <code>spmd.R</code> for trainable
-parameters on the axes where it reduces gradients. Megatron does this in
-<code>_assert_parameters_replicated()</code>. With the upstream PyTorch FSDP2
-integration in <a href="https://github.com/pytorch/pytorch/pull/181519">PR
-#181519</a>, FSDP-owned axes can instead be left unspecified on the model
-parameters: FSDP2 infers <code>spmd.R</code>, while the model explicitly marks
-its TP (and other model-parallel) placement.</p>
+<p>
+     Data-parallel axes (e.g. DP, CP, EDP) usually follow a standard convention,
+     since each rank on a (DDP/FSDP/HSDP) axis uses the same params, but sees different
+     data at compute-time, requiring a BWD all-reduce to aggregate gradient contributions
+     across data/ranks.
+     This implies a <code>spmd.R</code> typing (replicate FWD, partial BWD).
+</p>
+
+<p>
+     Annotation-wise, this means a generic helper to annotate all params as <code>spmd.R</code>
+     on FSDP axes can be sufficient. In fact, this can be inferred if using pytorch's FSDP2 wrapper;
+     only model-parallel axis annotations are needed.
+     For Megatron's custom FSDP/DDP wrapper, we generically use `_assert_parameters_replicated()`.
+</p>
 
 <pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.forward" data-hash="61badae4d8" data-render="added">
 @@ -357,3 +358,8 @@ DistributedDataParallel.__init__
@@ -284,17 +279,30 @@ its TP (and other model-parallel) placement.</p>
          """
          Enable forward pre-hooks needed for param all-gather overlap with forward compute.
 </pre>
+
 <h4>Opting out with no_typecheck</h4>
-<p>The <a
-href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#fsdp">FSDP
-guidance for local SPMD types</a> recommends applying
-<code>spmd.no_typecheck()</code> liberally to storage and communication internals:
-they belong to the wrapper, not the model's forward/backward computation. The
-same boundary is useful for DDP's gradient bookkeeping and for other setup or
-bookkeeping paths; exclude only those operations, leaving compute-time parameter
-annotations visible to the checker.</p>
-<p>Megatron scopes DDP gradient accumulation and synchronization, fused-module
-setup, and host RNG bookkeeping this way:</p>
+
+<p>
+     Note that this annotates at pre-forward / post-param-unshard / compute-time (after FSDP performs its FWD all-gathers).
+     How FSDP handles distributed storage and pre-forward machinery is its own business, and those should not be the typechecker's business.
+</p>
+
+<p>
+     The <a
+     href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#fsdp">FSDP
+     guidance for local SPMD types</a> recommends applying
+     <code>spmd.no_typecheck()</code> liberally to storage and communication internals:
+     they belong to the wrapper, not the model's forward/backward computation. The
+     same boundary is useful for DDP's gradient bookkeeping and for other setup or
+     bookkeeping paths; exclude only those operations, leaving compute-time parameter
+     annotations visible to the checker.
+</p>
+
+<p>
+     Megatron scopes DDP gradient accumulation and synchronization, fused-module
+     setup, and host RNG bookkeeping this way:
+</p>
+
 <pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel._make_backward_post_hook.hook" data-hash="e837028bb2">
 @@ -433,12 +463,16 @@ DistributedDataParallel._make_backward_post_hook.hook
              if is_graph_capturing():

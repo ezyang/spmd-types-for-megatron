@@ -92,40 +92,19 @@ support for custom autograd functions that don't do any collectives;
 you only need to tell the typechecker that the autograd function is local, and
 the standard local SPMD propagation rules can apply.</p>
 
-<p>For each mesh axis, propagation depends on the operand types and the kind of
-operation. The <a
-href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#propagation-rules">local
-SPMD propagation rules</a> describe this in full. The table summarizes common
-cases; <code>R</code>, <code>I</code>, <code>V</code>, and <code>P</code> mean
-Replicate, Invariant, Varying, and Partial:</p>
-
-<table>
-<caption>Local SPMD type propagation, per mesh axis</caption>
-<thead>
-<tr>
-<th>Operand types</th>
-<th>Nonlinear<br><small>(e.g. exp, relu)</small></th>
-<th>Linear<br><small>(e.g. +, −, sum, neg)</small></th>
-<th>Multilinear<br><small>(e.g. ×, @, einsum)</small></th>
-</tr>
-</thead>
-<tbody>
-<tr><td><code>R</code> only</td><td><code>R</code></td><td><code>R</code></td><td><code>R</code></td></tr>
-<tr><td><code>I</code> only</td><td><code>I</code></td><td><code>I</code></td><td><code>I</code></td></tr>
-<tr><td><code>V</code>, or <code>R</code> with <code>V</code></td><td><code>V</code></td><td><code>V</code></td><td><code>V</code></td></tr>
-<tr><td><code>I</code> with any other type</td><td>Error</td><td>Error</td><td>Error</td></tr>
-<tr><td>All <code>P</code></td><td>Error</td><td><code>P</code></td><td>Error</td></tr>
-<tr><td><code>P</code> with <code>R</code> (or a scalar)</td><td>Error</td><td>Error</td><td><code>P</code></td></tr>
-<tr><td><code>P</code> with <code>V</code></td><td>Error</td><td>Error</td><td>Error</td></tr>
-</tbody>
-</table>
-
-<p>A unary operation on <code>P</code> is linear. For operands that cannot
-receive gradients (for example, with <code>requires_grad=False</code> or inside
-<code>torch.no_grad()</code>), <code>R</code> and <code>I</code> are
-interchangeable; if mixing them would otherwise be an error, those operands
-take the <code>R</code>/<code>I</code> flavor of the differentiable operands,
-defaulting to <code>R</code> if there are none.</p>
+<p>These generic rules say, for example, that <code>I</code>
+(<code>Invariant</code>: the forward value and gradient are identical across
+ranks) combined with <code>I</code> gives <code>I</code>;
+<code>R</code> (<code>Replicate</code>: identical forward values, with
+backward gradients pending reduction) combined with <code>R</code> gives
+<code>R</code>; and <code>R</code> combined with <code>V</code>
+(<code>Varying</code>: forward values and gradients may vary across ranks)
+gives <code>V</code>. How <code>P</code> (<code>Partial</code>: a value whose
+contributions still need to be reduced) propagates depends on the operation
+class; for example, linear operations preserve <code>P</code>. A full table
+and summary of the local SPMD propagation rules is in the <a
+href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#propagation-rules">spmd_types
+documentation</a>.</p>
 
 <p>Megatron registers its local autograd functions here:</p>
 

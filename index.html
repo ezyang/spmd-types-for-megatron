@@ -510,7 +510,9 @@ local SPMD propagation rules. Annotating these bounds as <code>V@TP</code> produ
          output = self.token_dispatcher.combine_preprocess(expert_output)
 
 </pre>
-<p>Expert parameters are annotated on the expert/sparse mesh rather than the dense mesh: each EP rank owns different experts, so parameters vary across EP, while ETP records how each expert's weight is partitioned (for example, sharded on a tensor dimension). EDP replication is left to the gradient-reduction wrapper to promise. This keeps the model's expert-parallel placement explicit without pretending expert weights are ordinary dense TP shards.</p>
+<p>
+     EP parameter annotations are pretty standard, just on the sparse mesh instead of dense:
+</p>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_is_expert_parallel_parameter" data-hash="451fffc44a" data-render="added">
 @@ -0,0 +118,12 @@ _is_expert_parallel_parameter
 +

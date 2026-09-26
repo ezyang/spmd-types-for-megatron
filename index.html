@@ -77,25 +77,13 @@ TODO: switch DSv3 to global spmd types
 <section id="what-type-checks-means">
 <h2>Annotating custom autograd functions</h2>
 
-<p>Custom autograd functions are black boxes to <code>spmd_types</code>: the
-typechecker cannot see what computation or collectives happen inside them, so it
-cannot infer how types propagate through them. Every custom autograd function
-used in a codebase therefore needs a typechecking annotation. These annotations
-constitute trusted code: the typechecker does not prove them correct (though
-<code>spmd.rulecheck</code> can test them numerically). An annotation's
-correctness must be judged against the autograd function's compute behavior;
-the typechecker then ensures that the functions compose coherently in a single
-forward-backward pass.</p>
+<p>Custom autograd functions are blackboxes to <code>spmd_types</code>’ typechecker; it can’t see the compute / collectives inside, and isn’t sure about the right propagation rules. Every <code>autograd.Fn</code> called in a FWD-BWD pass needs type annotations. These constitute trusted code: the typechecker doesn’t prove them right (by default - <code>spmd.rulecheck</code> can test them numerically), and correctness must be judged against the <code>autograd.Fn</code>’s runtime behavior. The typechecker only ensures the composition of functions is coherent for the FWD-BWD pass.</p>
 
 <h3>Local autograd functions</h3>
 
-<p>If you are doing only local SPMD typechecking, it is very simple to add
-support for custom autograd functions that don't do any collectives
-(e.g. the ones below - SwiGLU, MLA, RoPE, router-gate, aux-loss);
-you only need to tell the typechecker that the autograd function is local, and
-the standard local SPMD propagation rules can apply.</p>
+<p>If you’re only doing local SPMD typechecking, it’s very simple to support custom autograd functions that don’t have collectives (e.g. SwiGLU, MLA, RoPE, router-gate, aux-loss) - just annotate the <code>autograd.Fn</code> as local, and the typechecker knows to apply standard local SPMD propagation rules.</p>
 
-<p>Our patch registers them as local as part of the rules registry:</p>
+<p>We maintain a local function registry in the rules module:</p>
 
 <pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="&lt;module&gt;" data-hash="a69571b6e9" data-render="added">
 @@ -0,0 +1,15 @@

@@ -134,21 +134,16 @@ TODO: switch DSv3 to global spmd types
 +    spmd.register_local_autograd_function(function)
 </pre>
 
-<p><code>spmd_types</code>' generic local SPMD propagation rules say things like:</p>
+<p>The local SPMD propagation rules say things like:</p>
 <ul>
-<li><code>I</code> (<code>Invariant</code>: the FWD value and gradient are
-identical across ranks) mixed with <code>I</code> gives <code>I</code>.</li>
-<li><code>R</code> (<code>Replicate</code>: identical FWD values, but
-gradients pend reduction) combined with <code>R</code> gives <code>R</code>.</li>
-<li><code>R</code> combined with <code>V</code> (<code>Varying</code>: both
-FWD &amp; BWD values can vary, e.g. sharded / different shapes) gives <code>V</code>.</li>
-<li><code>P</code> (<code>Partial</code>: pending reduction) propagation
-depends on the class of op.</li>
+<li><code>I</code> (<code>Invariant</code>: the FWD value and BWD gradient are identical across ranks) mixed with <code>I</code> gives <code>I</code>.</li>
+<li><code>R</code> (<code>Replicate</code>: identical FWD values, but gradients pend reduction) mixed with <code>R</code> gives <code>R</code>.</li>
+<li><code>R</code> combined with <code>V</code> (<code>Varying</code>: both FWD &amp; BWD values can vary, e.g. sharded / different data / different local BS) gives <code>V</code>.</li>
+<li><code>P</code> (<code>Partial</code>: FWD pending reduction, identical incoming gradients) propagation depends on the class of op.</li>
 </ul>
 
-<p>A full table and summary of the local SPMD propagation rules is in the <a
-href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#propagation-rules">spmd_types
-documentation</a>.</p>
+<p>The full local SPMD propagation rules table is at <a
+href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#propagation-rules">spmd_types documentation</a>.</p>
 
 </section>
 
@@ -157,13 +152,9 @@ documentation</a>.</p>
 
 <h3>TP annotations</h3>
 
-<p>SPMD typechecking is based on type propagation, so all starting tensors
-(inputs, buffers, params) have to be annotated. Param annotations are more
-involved on model-parallel axes (e.g. TP, EP, ETP). Fortunately in local SPMD
-typechecking, complete correctness for <code>spmd.S(dim)</code> usage (tensor dim
-sharding) isn't strictly needed, as it will decompose to <code>spmd.V</code>, but
-we can read <code>partition_dim</code> attributes off of parameters to figure this
-out.</p>
+<p>All input tensors to a typechecked region (inputs / buffers / params) need annotation on all typechecking mesh axes. For Megatron this is <code>(TP x CP x DP)</code> for the dense mesh, and <code>(ETP x EP x EDP)</code> for the sparse (expert) mesh. PP is non-SPMD, so <code>spmd_types</code> doesn’t typecheck it.</p>
+
+<p>As we’ll see, model-parallel axis (TP, ETP, EP) annotations are more involved than data-parallel ones, but fortunately we can read <code>partition_dim</code> off of params to specify sharding.</p>
 
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dense_parameter" data-hash="39641952d1" data-render="added">
 @@ -0,0 +76,11 @@ _annotate_dense_parameter
@@ -410,9 +401,9 @@ local SPMD propagation rules. Annotating these bounds as <code>V@TP</code> produ
 
 <section id="two-meshes">
 <h2>Expert parallelism</h2>
-<p>For EP, both megatron and torchtitan use what megatron calls <a href="https://arxiv.org/abs/2504.14960">MoE parallel folding</a>: EP ranks are a subset of DPxCPxTP ranks, and so it's simpler to view EP &amp; DP/CP/TP as part of different meshes (different views of the same GPU ranks). Megatron uses a dense (TP x CP x DP) mesh for attention and other non-expert-FFN compute, and an expert/sparse (ETP x EP x EDP) mesh for the EP region.</p>
+<p>For EP, Megatron uses what it calls <a href="https://arxiv.org/abs/2504.14960">MoE parallel folding</a>: EP ranks are a subset of (TP x CP x DP) ranks, and it's simpler to view EP vs. DP x CP x TP as part of different meshes (different views of the same GPU ranks). The dense (TP x CP x DP) mesh is for attention and other non-expert-FFN compute, and the expert/sparse (ETP x EP x EDP) mesh for the MoE region.</p>
 
-<p>The relation w/ world size is TP × CP × DP = ETP × EP × EDP = <code>world_size / PP</code> (PP is non-SPMD, so <code>spmd_types</code> doesn't typecheck it). Note that in contrast, torchtitan uses a (DP x CP x TP) dense and (DP_replicate, EFSDP, EP) sparse mesh view.</p>
+<p><code>spmd_types</code> supports cross-mesh transitions: the mesh-axes in annotations are switched onto the new mesh, and the before/after types are verified to be compatible (if say, TP == ETP, a tensor is sharded on TP but not on ETP, <code>spmd_types</code> will raise, you must all-gather first).</p>
 
 <p>Sparse/dense mesh transition happens at the dispatch/combine all2alls; routing is done on dense mesh, and the token sends to EP ranks transitions to sparse mesh. The <code>expert_parallel_region</code> / <code>leave_expert_parallel_region</code> runtime contexts tell the typechecker which mesh is currently active, but add no runtime overhead.</p>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="expert_parallel_mesh" data-hash="98a1cb529f" data-render="added">
@@ -555,7 +546,7 @@ local SPMD propagation rules. Annotating these bounds as <code>V@TP</code> produ
          output = self.token_dispatcher.combine_preprocess(expert_output)
 
 </pre>
-<p>The real HybridEP dispatch fuses permutation with rank-to-rank all-to-all, which a fake process group cannot perform. <code>_fake_dispatch</code> is a HybridEP test shim: it uses only this rank's <code>x</code>, repeating rows with <code>index_select</code> to make the requested dispatched-row count (<code>num_permuted_tokens</code>, or the total number of route assignments if unset). It does not use individual route assignments to send or sort tokens, and sends nothing to other ranks. Placeholder probabilities, even per-expert counts, and a handle with the row indices and a zero overflow flag let fake combine/backward preserve compatible shapes. This keeps the dispatcher call path runnable, but does not test actual routing, load balance, communication, or overflow recovery. This is dispatcher test scaffolding rather than typechecking logic: <code>no_typecheck</code> skips inference through the placeholder operations, while the <code>HybridEPDispatch</code> rule in <code>spmd_rules.py</code> supplies the distributed output-type contract.</p>
+<p>The HybridEP backend uses dispatch kernels that aren’t compatible with fake ProcessGroup, so we mock a <code>_fake_dispatch</code> method that simulates it, repeating input tokens to the requested shape, stubbing the actual comms. Like the rest of fake PG, this is enough to simulate distributed behavior (and typechecking correctness), but not for numerical correctness.</p>
 <pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_fake_dispatch" data-hash="6195052234" data-render="added">
 @@ -352,0 +358,22 @@ _fake_dispatch
 +
@@ -603,7 +594,7 @@ local SPMD propagation rules. Annotating these bounds as <code>V@TP</code> produ
 </pre>
 
 
-<p><code>_annotate_dispatcher_state</code> types the dispatcher's persistent overflow flag, not an expert activation or weight. With a capacity-based token budget, dispatch reads an overflow bit from its handle and ORs it into this flag; <code>annotate_model</code> marks it varying on dense TP, DP, and CP because overflow can be rank-local. This initial annotation lets the checker validate the in-place OR during dispatch and track the accumulated flag. When <code>PagedStashRunner</code> is in use, it later aggregates the flags across ranks; if any rank overflowed, it retries without the expert-rank capacity limit so tokens are not dropped. The flag is control state for that recovery path, not an input to the experts' numerical computation.</p>
+<p>For typechecking to pass we annotate the bit tensor HybridEP uses to track <a href="https://github.com/NVIDIA/Megatron-LM/blob/main/docs/user-guide/features/paged_stash.md">paged activation stashing overflow</a>.</p>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dispatcher_state" data-hash="fcba4332b3" data-render="added">
 @@ -0,0 +182,11 @@ _annotate_dispatcher_state
 +
@@ -661,13 +652,7 @@ Environment: PyTorch 2.14.0+cu130 (CUDA 13.0), Transformer Engine
 +        yield
 </pre>
 <h3>Annotating the model</h3>
-<p><code>annotate_model</code> is the entry point that applies these conventions
-across a module tree: dense and expert parameters use their respective
-annotations, buffers and frozen tensors are treated as non-trainable state,
-and vocab bounds and dispatcher control state receive their specialized types.
-Call it inside <code>typecheck()</code> before the checked forward pass; wrapping
-the model in DDP lets DDP supply the data-parallel replication promise when
-forward begins.</p>
+<p><code>annotate_model</code> is the entry point that applies the annotations we've built for all params &amp; model-parallel mesh axes: dense and expert parameters, buffers, non-trainable params &amp; other state involved in FWD-BWD compute. Call it inside <code>typecheck()</code> before the FWD pass. Wrapping the model in DDP lets the DDP wrapper supply data-parallel axes annotations in pre-FWD.</p>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="annotate_model" data-hash="c568c6eba7" data-render="added">
 @@ -0,0 +193,34 @@ annotate_model
 +

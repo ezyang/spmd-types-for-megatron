@@ -475,41 +475,6 @@ local SPMD propagation rules. Annotating these bounds as <code>V@TP</code> produ
 +        return tensor
 +    return spmd.reinterpret_mesh(tensor, spmd.current_mesh())
 </pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/moe_layer.py" data-symbol="MoELayer.routed_experts_compute" data-hash="aa40fce594">
-@@ -549,18 +550,20 @@ MoELayer.routed_experts_compute
-             self.token_dispatcher.dispatch_postprocess(hidden_states, probs)
-         )
-         dispatched_input = self._maybe_record_overload_factor(dispatched_input, tokens_per_expert)
--        if (
--            hasattr(self, "_inference_token_dispatcher")
--            and self.is_inference_cuda_graphed_iteration
--        ):
--            routing_map = self.token_dispatcher.routing_map
--            expert_output, mlp_bias = apply_module(self.experts)(
--                dispatched_input, tokens_per_expert, permuted_probs, routing_map=routing_map
--            )
--        else:
--            expert_output, mlp_bias = apply_module(self.experts)(
--                dispatched_input, tokens_per_expert, permuted_probs
--            )
-+        with expert_parallel_region():
-+            if (
-+                hasattr(self, "_inference_token_dispatcher")
-+                and self.is_inference_cuda_graphed_iteration
-+            ):
-+                routing_map = self.token_dispatcher.routing_map
-+                expert_output, mlp_bias = apply_module(self.experts)(
-+                    dispatched_input, tokens_per_expert, permuted_probs, routing_map=routing_map
-+                )
-+            else:
-+                expert_output, mlp_bias = apply_module(self.experts)(
-+                    dispatched_input, tokens_per_expert, permuted_probs
-+                )
-+        expert_output = leave_expert_parallel_region(expert_output)
-         assert mlp_bias is None, f"mlp_bias is not supported for {type(self.token_dispatcher)}"
-         output = self.token_dispatcher.combine_preprocess(expert_output)
-
-</pre>
 <p>
      EP parameter annotations are pretty standard, just on the sparse mesh instead of dense:
 </p>
@@ -566,6 +531,41 @@ local SPMD propagation rules. Annotating these bounds as <code>V@TP</code> produ
 +            parallel_state.get_expert_model_parallel_group(): spmd.V,
 +        },
 +    )
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/moe_layer.py" data-symbol="MoELayer.routed_experts_compute" data-hash="aa40fce594" data-render="new" data-lines="553-566">
+@@ -549,18 +550,20 @@ MoELayer.routed_experts_compute
+             self.token_dispatcher.dispatch_postprocess(hidden_states, probs)
+         )
+         dispatched_input = self._maybe_record_overload_factor(dispatched_input, tokens_per_expert)
+-        if (
+-            hasattr(self, "_inference_token_dispatcher")
+-            and self.is_inference_cuda_graphed_iteration
+-        ):
+-            routing_map = self.token_dispatcher.routing_map
+-            expert_output, mlp_bias = apply_module(self.experts)(
+-                dispatched_input, tokens_per_expert, permuted_probs, routing_map=routing_map
+-            )
+-        else:
+-            expert_output, mlp_bias = apply_module(self.experts)(
+-                dispatched_input, tokens_per_expert, permuted_probs
+-            )
++        with expert_parallel_region():
++            if (
++                hasattr(self, "_inference_token_dispatcher")
++                and self.is_inference_cuda_graphed_iteration
++            ):
++                routing_map = self.token_dispatcher.routing_map
++                expert_output, mlp_bias = apply_module(self.experts)(
++                    dispatched_input, tokens_per_expert, permuted_probs, routing_map=routing_map
++                )
++            else:
++                expert_output, mlp_bias = apply_module(self.experts)(
++                    dispatched_input, tokens_per_expert, permuted_probs
++                )
++        expert_output = leave_expert_parallel_region(expert_output)
+         assert mlp_bias is None, f"mlp_bias is not supported for {type(self.token_dispatcher)}"
+         output = self.token_dispatcher.combine_preprocess(expert_output)
+
 </pre>
 <p>The real HybridEP dispatch fuses permutation with rank-to-rank all-to-all, which a fake process group cannot perform. <code>_fake_dispatch</code> is a HybridEP test shim: it uses only this rank's <code>x</code>, repeating rows with <code>index_select</code> to make the requested dispatched-row count (<code>num_permuted_tokens</code>, or the total number of route assignments if unset). It does not use individual route assignments to send or sort tokens, and sends nothing to other ranks. Placeholder probabilities, even per-expert counts, and a handle with the row indices and a zero overflow flag let fake combine/backward preserve compatible shapes. This keeps the dispatcher call path runnable, but does not test actual routing, load balance, communication, or overflow recovery. This is dispatcher test scaffolding rather than typechecking logic: <code>no_typecheck</code> skips inference through the placeholder operations, while the <code>HybridEPDispatch</code> rule in <code>spmd_rules.py</code> supplies the distributed output-type contract.</p>
 <pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_fake_dispatch" data-hash="6195052234" data-render="added">

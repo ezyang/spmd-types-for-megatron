@@ -13,5 +13,263 @@
 </head>
 <body>
 <h1>scratch</h1>
+<section id="omitted-mechanical-diff">
+<h2>Omitted mechanical diff</h2>
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="rule_for.decorate" data-hash="d72b44dec7" data-render="added">
+@@ -0,0 +20,5 @@ rule_for
++
++    def decorate(rule):
++        if function is not None:
++            function.spmd_typecheck = staticmethod(rule)
++        return rule
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/__init__.py" data-symbol="&lt;module&gt;" data-hash="343e405faa" data-render="added">
+@@ -0,0 +1,6 @@
++"""Optional SPMD type-checking integration for Megatron Core."""
++
++from .annotations import annotate_model, annotate_tensor
++from .checker import typecheck
++
++__all__ = ["annotate_model", "annotate_tensor", "typecheck"]
+</pre>
+<pre class="hunk" data-file="uv.lock" data-symbol="&lt;hunk 1&gt;" data-hash="cf682360c0">
+@@ -3230,6 +3230,9 @@ mlm = [
+     { name = "transformers" },
+     { name = "wandb" },
+ ]
++spmd = [
++    { name = "spmd-types" },
++]
+ training = [
+     { name = "accelerate" },
+     { name = "flask-restful" },
+</pre>
+<pre class="hunk" data-file="uv.lock" data-symbol="&lt;hunk 2&gt;" data-hash="c5be08cac3">
+@@ -3290,6 +3293,7 @@ test = [
+     { name = "pytest-mock" },
+     { name = "pytest-random-order" },
+     { name = "pyyaml" },
++    { name = "spmd-types" },
+     { name = "tensorboard" },
+     { name = "wrapt" },
+ ]
+</pre>
+<pre class="hunk" data-file="uv.lock" data-symbol="&lt;hunk 3&gt;" data-hash="b28d149008">
+@@ -3338,6 +3342,7 @@ requires-dist = [
+     { name = "quart", marker = "extra == 'dev'" },
+     { name = "sentencepiece", marker = "extra == 'mlm'" },
+     { name = "sentencepiece", marker = "extra == 'training'" },
++    { name = "spmd-types", marker = "extra == 'spmd'", specifier = "==0.2.5" },
+     { name = "tensorstore", marker = "extra == 'dev'", specifier = "~=0.1,!=0.1.46,!=0.1.72" },
+     { name = "tensorstore", marker = "extra == 'lts'", specifier = "~=0.1,!=0.1.46,!=0.1.72" },
+     { name = "tiktoken", marker = "extra == 'mlm'" },
+</pre>
+<pre class="hunk" data-file="uv.lock" data-symbol="&lt;hunk 4&gt;" data-hash="f2003974fd">
+@@ -3353,7 +3358,7 @@ requires-dist = [
+     { name = "wget", marker = "extra == 'dev'" },
+     { name = "wget", marker = "extra == 'lts'" },
+ ]
+-provides-extras = ["training", "mlm", "dev", "lts"]
++provides-extras = ["spmd", "training", "mlm", "dev", "lts"]
+ 
+ [package.metadata.requires-dev]
+ build = [
+</pre>
+<pre class="hunk" data-file="uv.lock" data-symbol="&lt;hunk 5&gt;" data-hash="aa37f2ae4c">
+@@ -3401,6 +3406,7 @@ test = [
+     { name = "pytest-mock" },
+     { name = "pytest-random-order" },
+     { name = "pyyaml" },
++    { name = "spmd-types", specifier = "==0.2.5" },
+     { name = "tensorboard" },
+     { name = "wrapt" },
+ ]
+</pre>
+<pre class="hunk" data-file="uv.lock" data-symbol="&lt;hunk 6&gt;" data-hash="1737f72a02">
+@@ -7797,6 +7803,15 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/52/a7/d2782e4e3f77c8450f727ba74a8f12756d5ba823d81b941f1b04da9d033a/sphinxcontrib_serializinghtml-2.0.0-py3-none-any.whl", hash = "sha256:6e2cb0eef194e10c27ec0023bfeb25badbbb5868244cf5bc5bdc04e4464bf331", size = 92072, upload-time = "2024-07-29T01:10:08.203Z" },
+ ]
+ 
++[[package]]
++name = "spmd-types"
++version = "0.2.5"
++source = { registry = "https://pypi.org/simple" }
++sdist = { url = "https://files.pythonhosted.org/packages/f4/56/c39c2e8523c1133fae620465bbdd87289253c23a5b12bd425ffd5a37a3c4/spmd_types-0.2.5.tar.gz", hash = "sha256:2f104f6384d1b33facd8fa7a631e871c5f05360543508145a8d8435e0e0b03a8", size = 110350, upload-time = "2026-08-24T18:19:00.943Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/2f/fb/53a94354e5f2d41d690bf8634c9b095b113d8ed2fce38f424a41dce49104/spmd_types-0.2.5-py3-none-any.whl", hash = "sha256:58a8288ff810f8a175de3be7d2fb0c0ec276f61054b729211bab189869d41994", size = 123678, upload-time = "2026-08-24T18:18:59.589Z" },
++]
++
+ [[package]]
+ name = "sqlalchemy"
+ version = "2.0.49"
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="&lt;module&gt;" data-hash="47f11f102e" data-render="added">
+@@ -0,0 +1,19 @@
++"""Megatron-specific helpers for working with spmd_types.
++
++These helpers encode Megatron's conventions for how parameters are distributed
++and where gradient reductions occur. Other codebases will need similar helpers,
++but the specific types will differ.
++"""
++
++from __future__ import annotations
++
++from contextlib import contextmanager
++from typing import Iterator
++
++import spmd_types as spmd
++import torch
++import torch.nn as nn
++
++from megatron.core import parallel_state
++from megatron.core.tensor_parallel.layers import VocabParallelEmbedding
++from megatron.core.transformer.moe.token_dispatcher import MoEFlexTokenDispatcher
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/checker.py" data-symbol="&lt;module&gt;" data-hash="3a46b05a36" data-render="added">
+@@ -0,0 +1,12 @@
++"""The Megatron SPMD type-checking context."""
++
++from __future__ import annotations
++
++from contextlib import contextmanager
++from typing import Iterator, Literal
++
++import spmd_types as spmd
++import torch
++from spmd_types.checker import typecheck as _typecheck
++
++from megatron.core.spmd.annotations import model_parallel_mesh
+</pre>
+<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="&lt;module&gt;" data-hash="9bdf686034">
+@@ -4,6 +4,7 @@
+ from contextlib import contextmanager
+ from typing import Optional
+ 
++import spmd_types as spmd
+ import torch
+ 
+ from ..config_logger import has_config_logger_enabled, log_config_to_disk
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/random.py" data-symbol="&lt;module&gt;" data-hash="9bdf686034">
+@@ -9,6 +9,7 @@
+ from collections.abc import Callable
+ from typing import Any, Optional, TypeVar, Union
+ 
++import spmd_types as spmd
+ import torch
+ from torch import _C
+ from torch.cuda import _lazy_call, _lazy_init
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/experts.py" data-symbol="&lt;module&gt;" data-hash="9bdf686034">
+@@ -11,6 +11,7 @@
+ from math import ceil
+ from typing import Optional, Protocol, Tuple
+ 
++import spmd_types as spmd
+ import torch
+ import torch.nn.functional as F
+ 
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="&lt;module&gt;" data-hash="aaf27cd0bf">
+@@ -15,8 +15,10 @@
+ except ImportError:
+     HAVE_DEEP_EP = False
+ 
++import spmd_types as spmd
+ import torch
+ 
++
+ _buffer = None
+ 
+ 
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/moe_layer.py" data-symbol="&lt;module&gt;" data-hash="f3c8602340">
+@@ -12,6 +12,7 @@
+ from megatron.core import parallel_state, tensor_parallel, utils
+ from megatron.core.extensions.transformer_engine import HAVE_TE
+ from megatron.core.process_groups_config import ProcessGroupCollection
++from megatron.core.spmd.annotations import expert_parallel_region, leave_expert_parallel_region
+ from megatron.core.transformer.module import MegatronModule
+ from megatron.core.transformer.moe.moe_logging import get_moe_overload_factor_tracker
+ from megatron.core.transformer.moe.moe_utils import (
+</pre>
+<pre class="hunk" data-file="megatron/core/utils.py" data-symbol="&lt;module&gt;" data-hash="a979ef10cc">
+@@ -45,6 +45,7 @@
+ from megatron.core import parallel_state
+ from megatron.core.dist_checkpointing.mapping import ShardedTensor
+ 
++
+ try:
+     from packaging.version import Version as PkgVersion
+ 
+</pre>
+<pre class="hunk" data-file="megatron/core/extensions/transformer_engine.py" data-symbol="&lt;module&gt;" data-hash="9455059fc5">
+@@ -396,6 +396,7 @@ TEActivationOp
+ 
+ 
+ if HAVE_TE and is_te_min_version("1.13.0"):
++    from transformer_engine.pytorch.ops.fuser import _OperationFuserAutogradFunction
+ 
+     class TEActivationOp:
+         """
+@@ -664,6 +665,12 @@ TENorm.__new__
+         return cast(LayerNormInterface, instance)
+ 
+ 
++if HAVE_TE:
++    from transformer_engine.pytorch.module import linear as _te_linear
++
++    _Linear = _te_linear._Linear
++
++
+ class TELinear(te.pytorch.Linear):
+     """Wrapper for the Transformer-Engine's `Linear` layer.
+ 
+@@ -907,6 +914,10 @@ TELinear.backward_dw
+             super().backward_dw()
+ 
+ 
++if HAVE_TE:
++    from transformer_engine.pytorch.module.layernorm_linear import _LayerNormLinear
++
++
+ class TELayerNormColumnParallelLinear(te.pytorch.LayerNormLinear):
+     """Wrapper for the Transformer-Engine's `LayerNormLinear` layer
+     that combines layernorm and linear layers."""
+@@ -1348,6 +1359,10 @@ TERowParallelLinear.backward_dw
+             super().backward_dw()
+ 
+ 
++if HAVE_TE:
++    from transformer_engine.pytorch.attention.dot_product_attention.backends import FusedAttnFunc
++
++
+ class TEDotProductAttention(te.pytorch.DotProductAttention):
+     """Wrapper for the Transformer-Engine's `DotProductAttention` layer
+     that also has "flash attention" enabled.
+@@ -2979,7 +2994,10 @@ def fused_apply_rotary_pos_emb_thd(
+     fused_permute_and_pad_with_probs = None
+ 
+ try:
+-    from transformer_engine.pytorch.cross_entropy import parallel_cross_entropy
++    from transformer_engine.pytorch.cross_entropy import (
++        CrossEntropyFunction,
++        parallel_cross_entropy,
++    )
+ 
+     _TE_SUPPORTS_CG_CAPTURABLE = is_te_min_version("2.7.0")
+     current_te_version = get_te_version()
+@@ -3054,6 +3072,9 @@ def te_general_gemm(
+ 
+ if HAVE_TE and is_te_min_version("2.7.0.dev"):
+     from transformer_engine.pytorch.router import (  # pylint: disable=unused-import
++        FusedAuxLoss,
++        FusedComputeScoresForMoEAuxLoss,
++        FusedTopkScoreFunction,
+         fused_compute_score_for_moe_aux_loss,
+         fused_moe_aux_loss,
+         fused_topk_with_score_function,
+</pre>
+</section>
 </body>
 </html>

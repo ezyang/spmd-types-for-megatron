@@ -41,6 +41,15 @@ the diff of the diff. Delete markers yourself once the prose is right; run
 `check` before publishing. `init` overwrites `scratch.html`; it never
 overwrites an existing `index.html`.
 
+## Local preview with inline editing
+
+    python3 edit_server.py [--port 8001]
+
+serves the pages with an editor injected. Double-click a paragraph, list item,
+or heading to edit it in place; Ctrl/Cmd+Enter or clicking away saves it back to
+the `.html` file, Esc cancels, Alt+double-click edits the raw HTML. The files on
+disk stay plain HTML, and the page reloads itself when a file changes on disk.
+
 ## Renderer and browser validation
 
 The renderer is `tour.css` and `tour.js`, loaded by every page. Consecutive

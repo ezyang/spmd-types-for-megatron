@@ -30,6 +30,14 @@ VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
         "meta", "source", "track", "wbr"}
 
 
+
+def version(path: str) -> int:
+    """Newest mtime of the page and the renderer, so either change reloads it."""
+    here = os.path.dirname(path)
+    return max(os.stat(p).st_mtime_ns for p in [path] + [os.path.join(here, a) for a in ("tour.js", "tour.css")]
+               if os.path.exists(p))
+
+
 class Blocks(HTMLParser):
     """Record (start_tag_start, start_tag_end, end_tag_start) for each prose block."""
 
@@ -244,7 +252,7 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send(200, EDIT_JS, "application/javascript")
         if route == "/__mtime":
             path = page_path(self.query().get("page", ""))
-            return self.json(200, {"mtime": os.stat(path).st_mtime_ns if path else 0})
+            return self.json(200, {"mtime": version(path) if path else 0})
         if route == "/__src":
             q = self.query()
             path = page_path(q.get("page", ""))
@@ -289,7 +297,7 @@ class Handler(SimpleHTTPRequestHandler):
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(new)
         os.replace(tmp, path)
-        self.json(200, {"mtime": os.stat(path).st_mtime_ns})
+        self.json(200, {"mtime": version(path)})
 
     def log_message(self, fmt, *args):
         if "/__mtime" not in str(args[0] if args else ""):

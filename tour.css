@@ -68,3 +68,6 @@ table.diffstat td.n { text-align: right; color: #666; }
 table.diffstat td.bar span { display: inline-block; height: 8px; vertical-align: middle; }
 table.diffstat td.bar span.add { background: #2da44e; }
 table.diffstat td.bar span.del { background: #cf222e; }
+table.mapping { border-collapse: collapse; margin: 1em 0; font-size: 13px; }
+table.mapping th, table.mapping td { border: 1px solid #ddd; padding: 3px 8px; text-align: left; vertical-align: top; }
+table.mapping th { background: #f6f8fa; font-family: Helvetica, Arial, sans-serif; }

@@ -134,12 +134,11 @@ TODO: switch DSv3 to global spmd types
 +    spmd.register_local_autograd_function(function)
 </pre>
 
-<p>The local SPMD propagation rules say things like:</p>
+<p>The local SPMD rules say things like:</p>
 <ul>
-<li><code>I</code> (<code>Invariant</code>: the FWD value and BWD gradient are identical across ranks) mixed with <code>I</code> gives <code>I</code>.</li>
-<li><code>R</code> (<code>Replicate</code>: identical FWD values, but gradients pend reduction) mixed with <code>R</code> gives <code>R</code>.</li>
-<li><code>R</code> combined with <code>V</code> (<code>Varying</code>: both FWD &amp; BWD values can vary, e.g. sharded / different data / different local BS) gives <code>V</code>.</li>
-<li><code>P</code> (<code>Partial</code>: FWD pending reduction, identical incoming gradients) propagation depends on the class of op.</li>
+<li>Compute on <code>I</code> (<code>Invariant</code>: the FWD value and BWD gradient are identical across ranks) gives <code>I</code>, compute on <code>R</code> (<code>Replicate</code>: identical FWD values, but gradients pend reduction) gives <code>R</code>. Pretty standard, ranks computing on same inputs produce the same outputs.</li>
+<li><code>R</code> combined with <code>V</code> (<code>Varying</code>: both FWD &amp; BWD values can vary, e.g. sharded / different data / different local BS) gives <code>V</code>. Makes sense - 1 input differs across ranks, the output differs too. <code>I</code> doesn't mix with <code>V</code> (or any other type); <code>R</code> is allowed because the [<code>R</code> FWD &lt;-&gt; <code>P</code> BWD] duality is a reminder that the gradient pends reduction, aggregating contributions from varying compute. The common case is data parallelism (same params, different data) - the gradient all-reduce computes a singular value for the global batch.</li>
+<li><code>P</code> (<code>Partial</code>: FWD pending reduction, identical incoming gradients) propagation depends on the class of op. This is useful for things like delaying or coalescing all-reduces, but also reminds you when an all-reduce is needed (e.g. after colwise/rowwise TP FFN, before adding back to residual stream).</li>
 </ul>
 
 <p>The full local SPMD propagation rules table is at <a
@@ -152,9 +151,11 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 
 <h3>TP annotations</h3>
 
-<p>All input tensors to a typechecked region (inputs / buffers / params) need annotation on all typechecking mesh axes. For Megatron this is <code>(TP x CP x DP)</code> for the dense mesh, and <code>(ETP x EP x EDP)</code> for the sparse (expert) mesh. PP is non-SPMD, so <code>spmd_types</code> doesn’t typecheck it.</p>
+<p>In our experience, tensor parallelism is the most bug-prone form of parallelism, and arguably where <code>spmd_types</code> can catch the most bugs (in <a href="https://github.com/NVIDIA/Megatron-LM/issues/7452">Megatron-LM#7452</a> most are TP). The type system is most involved for TP, and when your architecture gets fancy, or you're going beyond standard TP tricks (TP MLP, SP, vocab-parallel embedding + loss), it's not so obvious when a tensor is across ranks or not, when to inject a FWD or BWD all-reduce, or when sharded semantics apply.</p>
 
-<p>As we’ll see, model-parallel axis (TP, ETP, EP) annotations are more involved than data-parallel ones, but fortunately we can read <code>partition_dim</code> off of params to specify sharding.</p>
+<p><code>spmd_types</code> doesn't require you to typecheck all axes of your model, so you could just start with TP, but since adding DP &amp; CP is pretty lightweight, we'll go ahead with those too.</p>
+
+<p>All input tensors to the typechecked region (inputs, params, buffers) need annotation on typechecked axes. For params this is usually read off sharding metadata, or painfully specified by hand. Fortunately Megatron stores <code>tensor_model_parallel</code>, <code>partition_dim</code>, <code>sequence_parallel</code> directly on params to say if &amp; how they're sharded, and if gradients need SP reduction.</p>
 
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dense_parameter" data-hash="39641952d1" data-render="added">
 @@ -0,0 +76,11 @@ _annotate_dense_parameter
@@ -220,20 +221,16 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 
 <h3>Handling FSDP</h3>
 
-<p>
-     Data-parallel axes (e.g. DP, CP, EDP) usually follow a standard convention,
-     since each rank on a (DDP/FSDP/HSDP) axis uses the same params, but sees different
-     data at compute-time, requiring a BWD all-reduce to aggregate gradient contributions
-     across data/ranks.
-     This implies a <code>spmd.R</code> typing (replicate FWD, partial BWD).
-</p>
+<p>You can typically annotate data parallel axes (DP, CP, EDP for Megatron) as <code>spmd.R</code> as standard convention; this follows from:</p>
+<ul>
+<li>every rank uses the same params (<code>R</code> FWD)</li>
+<li>but computes on different data (<code>R</code> params @ <code>V</code> inputs -&gt; <code>V</code> activations)</li>
+<li>the DDP / FSDP wrapper performs gradient all-reduces (<code>R</code> FWD &lt;-&gt; <code>P</code> BWD duality)</li>
+</ul>
 
-<p>
-     Annotation-wise, this means a generic helper to annotate all params as <code>spmd.R</code>
-     on FSDP axes can be sufficient. In fact, this can be inferred if using pytorch's FSDP2 wrapper;
-     only model-parallel axis annotations are needed.
-     For Megatron's custom FSDP/DDP wrapper, we generically use <code>_assert_parameters_replicated()</code>.
-</p>
+<p>This is irrespective of the particular form of DP (DDP, FSDP, HSDP, or fancier). A generic helper to annotate <code>R</code> on every param typically works, and if you use PyTorch's FSDP2 implementation it'll even fill in the FSDP axes for you, just ensure TP or other model-parallel axes are annotated (following <a href="https://github.com/pytorch/pytorch/pull/181519">pytorch/pytorch#181519</a>).</p>
+
+<p>For Megatron's wrapper we'll use the <code>_assert_parameters_replicated()</code> below.</p>
 
 <pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.forward" data-hash="61badae4d8" data-render="added">
 @@ -357,3 +358,8 @@ DistributedDataParallel.__init__
@@ -279,25 +276,11 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 
 <h4>Opting out with no_typecheck</h4>
 
-<p>
-     Note that this annotates at pre-forward / post-param-unshard / compute-time (after FSDP performs its FWD all-gathers).
-     How FSDP handles distributed storage and pre-forward machinery is its own business, and those should not be the typechecker's business.
-</p>
+<p>In most cases you'll want the typechecker to be on for your entire FWD step (BWD can be excluded, as FWD-BWD tying ensures correctness). Machinery like FSDP2 uses module forward pre-hooks to efficiently schedule all-gathers, and you'll likely run into annoying typechecker &lt;-&gt; FSDP internal interactions if you're using a custom wrapper.</p>
 
-<p>
-     The <a
-     href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#fsdp">FSDP
-     guidance for local SPMD types</a> recommends applying
-     <code>spmd.no_typecheck()</code> liberally to storage and communication internals:
-     they belong to the wrapper, not the model's forward/backward computation. The
-     same boundary is useful for DDP's gradient bookkeeping and for other setup or
-     bookkeeping paths; exclude only those operations, leaving compute-time parameter
-     annotations visible to the checker.
-</p>
+<p>The general <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#fsdp">FSDP guidance for local SPMD types</a> recommends applying <code>spmd.no_typecheck()</code> liberally, making this none of the typechecker's business, as internal state management isn't part of the autograd graph, and handling like distributed storage, comms, padding / copy ops, mixed-precision, quantization, should be flexible without having to reason about tensor types.</p>
 
-<p>
-     Specifically, we do this to get around Megatron's handling of grad accumulation & synchronization:
-</p>
+<p>Note that the annotation helper we wrote earlier is meant to apply after all of this - when FSDP's done its job, and presents the unsharded params ready for compute - then we can stamp on <code>spmd.R</code>.</p>
 
 <pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel._make_backward_post_hook.hook" data-hash="e837028bb2">
 @@ -433,12 +463,16 @@ DistributedDataParallel._make_backward_post_hook.hook
@@ -356,8 +339,7 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 <h3>Buffers & params not requiring grad</h3>
 <p>
      Buffers and non-trainable params also follow sharding metadata for TP, and <code>spmd.R</code> for DP/CP semantics.
-     Regarding <code>I/R</code> distinctions for TP, it is generally ok to initialize these tensors as <code>R</code>;
-     nothing needs to be responsible for reducing their gradients.
+     Regarding <code>I/R</code> distinctions for TP, it is generally ok to initialize these tensors as <code>R</code>, as nothing needs to be responsible for reducing gradients.
 </p>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="annotate_tensor" data-hash="00397e5052" data-render="added">
 @@ -0,0 +63,13 @@ annotate_tensor
@@ -378,11 +360,9 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 </section>
 
 <h3>TP vocab-parallel embedding, varying scalars</h3>
-<p>TP's <code>VocabParallelEmbedding</code> stores its local vocabulary range as rank-specific plain
-integers, using them to correctly mask and offset local token ids, producing correct local embedding lookups.
-<code>spmd.Scalar</code> is a annotation-carrying int/float wrapper, that when used in pytorch operators, follow standard
-local SPMD propagation rules. Annotating these bounds as <code>V@TP</code> produces local embeddings that are <code>V@TP</code>.
-</p>
+<p>In TP's vocab-parallel embedding, we store rank-local offsets determining which vocab shard is owned, use them to mask out-of-bounds indices and offset in-bounds ones (<a href="https://github.com/NVIDIA/Megatron-LM/blob/ca01ac6ce386ab6965df0a2f1df546dc7330d2c9/megatron/core/tensor_parallel/layers.py#L401-L430"><code>layers.py#L401-L430</code></a>).</p>
+
+<p><code>spmd_types</code> has a annotation-carrying <code>spmd.Scalar</code> class, that we can use to indicate this compute as rank-varying on TP, so the typechecker recognizes mask construction and embedding as producing a <code>V@TP</code> output.</p>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_vocab_bounds" data-hash="0271fe7d6e" data-render="added">
 @@ -0,0 +169,13 @@ _annotate_vocab_bounds
 +
@@ -401,34 +381,27 @@ local SPMD propagation rules. Annotating these bounds as <code>V@TP</code> produ
 </pre>
 
 <section id="local-spmd-typecheck-rules">
-<h2>Local SPMD typecheck rules</h2>
-<h3>Typecheck–compute separation</h3>
+<h2>Writing custom type rules</h2>
+<h3>Collective-performing autograd functions</h3>
 
-<p>Custom collectives need some special handling, since they interact with types
-in a non-trivial way. Fortunately, there are not that many interesting
-collectives, and we provide some helper functions for the semantics of common
-collectives which you can use to conveniently write your rules.</p>
+<p>Custom <code>autograd.Fn</code>s are typechecking blackboxes, so if they perform collectives, the standard local SPMD rules probably don't apply. For such functions, we can write SPMD type rules, i.e. how the function changes types. This Megatron patch aims for least intrusiveness, so we keep the rules in the <code>spmd_rules.py</code> side-registry, but you could also define them inline as <code>spmd_typecheck</code> methods (see <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/rules.md"><code>docs/rules.md</code></a>).</p>
 
-<p>In Megatron, these rules now sit in
-<code>spmd_rules.py</code>, alongside the rules for tensor-parallel linears,
-Transformer Engine operators, MoE loss scalers, and local autograd functions.
-The forward implementations stay focused on computation. The
-public <code>@rule_for(...)</code> decorator attaches each rule to its autograd class
-when <code>spmd_rules.py</code> is imported; <code>typecheck()</code> imports that
-module lazily for checked runs.</p>
+<p>Megatron defines its TP collectives in <code>tp_mappings.py</code>, custom <code>autograd.Fn</code>s like <code>_ReduceFromModelParallelRegion</code> (<code>P</code> -&gt; <code>I</code>), <code>_ReduceScatterToSequenceParallelRegion</code> (<code>P</code> -&gt; <code>S(seq)</code>), which <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#operators">the <code>spmd_types</code> docs</a> actually has a 1-1 mapping for. Registering these is pretty standard; they're just collectives, no compute.</p>
 
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="rule_for" data-hash="7325f5fab4" data-render="added" data-context="rule_for">
-@@ -0,0 +18,9 @@ rule_for
-+def rule_for(function):
-+    """Attach a type rule to an autograd function without changing its behavior."""
-+
-+    def decorate(rule):
-+        if function is not None:
-+            function.spmd_typecheck = staticmethod(rule)
-+        return rule
-+
-+    return decorate
-</pre>
+<table class="mapping">
+<tr><th>Megatron function</th><th><code>spmd_types</code> function</th></tr>
+<tr><td><code>copy_to_tensor_model_parallel_region(x)</code></td><td><code>spmd.convert(x, tp, src=spmd.I, dst=spmd.R)</code></td></tr>
+<tr><td><code>reduce_from_tensor_model_parallel_region(x)</code></td><td><code>spmd.all_reduce(x, tp, dst=spmd.I)</code></td></tr>
+<tr><td><code>scatter_to_tensor_model_parallel_region(x)</code></td><td><code>spmd.reduce_scatter(x, tp, dst=spmd.S(-1))</code></td></tr>
+<tr><td><code>gather_from_tensor_model_parallel_region(x)</code></td><td><code>spmd.all_gather(x, tp, src=spmd.S(-1), dst=spmd.R)</code></td></tr>
+<tr><td><code>scatter_to_sequence_parallel_region(x)</code></td><td><code>spmd.convert(x, tp, src=spmd.I, dst=spmd.S(0))</code></td></tr>
+<tr><td><code>gather_from_sequence_parallel_region(x, tensor_parallel_output_grad=True)</code></td><td><code>spmd.all_gather(x, tp, src=spmd.S(0), dst=spmd.R)</code></td></tr>
+<tr><td><code>gather_from_sequence_parallel_region(x, tensor_parallel_output_grad=False)</code></td><td><code>spmd.all_gather(x, tp, src=spmd.S(0), dst=spmd.I)</code></td></tr>
+<tr><td><code>reduce_scatter_to_sequence_parallel_region(x)</code></td><td><code>spmd.reduce_scatter(x, tp, dst=spmd.S(0))</code></td></tr>
+<tr><td><code>all_gather_last_dim_from_tensor_parallel_region(x)</code></td><td><code>spmd.all_gather(x, tp, src=spmd.S(-1), dst=spmd.R)</code></td></tr>
+<tr><td><code>reduce_scatter_last_dim_to_tensor_parallel_region(x)</code></td><td><code>spmd.reduce_scatter(x, tp, dst=spmd.S(-1))</code></td></tr>
+<tr><td><code>all_to_all(group, x)</code></td><td><code>spmd.all_to_all(x, group)</code></td></tr>
+</table>
 
 <pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_copy_to_model_parallel_region" data-hash="79b2971a0e" data-render="added">
 @@ -0,0 +27,7 @@ _copy_to_model_parallel_region
@@ -440,14 +413,6 @@ module lazily for checked runs.</p>
 +    spmd.assert_type(input_, {group: spmd.I})
 +    spmd.assert_local_type_like(output, input_, {group: spmd.R})
 </pre>
-
-<p>The sidecar pairs native collective contracts with the corresponding forward
-and backward mappings, then states the input/output types for the two tensor-parallel
-linears. Transformer Engine linear/layernorm-linear and cross-entropy hooks live
-there too, as do the identity-on-output rules for the MoE and MTP loss scalers.</p>
-
-<h3>Sidecar rule registry</h3>
-<p>The operator-specific rule implementations are kept here for reference.</p>
 <pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_reduce_from_model_parallel_region" data-hash="3e3c4f6427" data-render="added">
 @@ -0,0 +34,10 @@ _reduce_from_model_parallel_region
 +
@@ -541,6 +506,18 @@ there too, as do the identity-on-output rules for the MoE and MTP loss scalers.<
 +    """Type the self-adjoint token exchange."""
 +    spmd.assert_type(input, {group: spmd.S(0)})
 +    spmd.assert_local_type_like(output, input, {group: spmd.S(0)})
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="rule_for" data-hash="7325f5fab4" data-render="added" data-context="rule_for">
+@@ -0,0 +18,9 @@ rule_for
++def rule_for(function):
++    """Attach a type rule to an autograd function without changing its behavior."""
++
++    def decorate(rule):
++        if function is not None:
++            function.spmd_typecheck = staticmethod(rule)
++        return rule
++
++    return decorate
 </pre>
 <pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_linear_with_frozen_weight" data-hash="690f57a078" data-render="added">
 @@ -0,0 +101,19 @@ _linear_with_frozen_weight

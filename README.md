@@ -39,8 +39,9 @@ It reads the repo at the synced head. For another repo, add
 `--source-repo OWNER/NAME=PATH`; without it the existing text is kept and
 sync warns. Put a rule hunk and its source in a `<div class="pair">` to show
 them side by side: the pair widens to at most 1200px, centered on the text
-column (clamped to the space right of the TOC sidebar), each side scrolls
-horizontally, and the source
+column (clamped to the space right of the TOC sidebar). Every pair's left
+column is as wide as the widest rule (up to 68% of the pair), so rules don't
+scroll; the source takes the rest, scrolls horizontally, and
 scrolls within the height of the left box (at least that of the
 `_linear_with_frozen_weight` rule box).
 

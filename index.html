@@ -2398,9 +2398,6 @@ class CrossEntropyFunction(torch.autograd.Function):
 <h2>Expert parallelism</h2>
 <p>For EP, Megatron uses what it calls <a href="https://arxiv.org/abs/2504.14960">MoE parallel folding</a>: EP ranks are a subset of (TP x CP x DP) ranks, and it's simpler to view EP vs. DP x CP x TP as part of different meshes (different views of the same GPU ranks). The dense (TP x CP x DP) mesh is for attention and other non-expert-FFN compute, and the expert/sparse (ETP x EP x EDP) mesh for the MoE region.</p>
 
-<p><code>spmd_types</code> supports cross-mesh transitions: the mesh-axes in annotations are switched onto the new mesh, and the before/after types are verified to be compatible (if say, TP == ETP, a tensor is sharded on TP but not on ETP, <code>spmd_types</code> will raise, you must all-gather first).</p>
-
-<p>Sparse/dense mesh transition happens at the dispatch/combine all2alls; routing is done on dense mesh, and the token sends to EP ranks transitions to sparse mesh. The <code>expert_parallel_region</code> / <code>leave_expert_parallel_region</code> runtime contexts tell the typechecker which mesh is currently active, but add no runtime overhead.</p>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="expert_parallel_mesh" data-hash="98a1cb529f" data-render="added">
 @@ -0,0 +102,16 @@ expert_parallel_mesh
 +
@@ -2420,6 +2417,10 @@ class CrossEntropyFunction(torch.autograd.Function):
 +        "EP": spmd.MeshAxis.of(parallel_state.get_expert_model_parallel_group()),
 +    }
 </pre>
+
+<p><code>spmd_types</code> supports cross-mesh transitions: the mesh-axes in annotations are switched onto the new mesh, and the before/after types are verified to be compatible (if say, TP == ETP, a tensor is sharded on TP but not on ETP, <code>spmd_types</code> will raise, you must all-gather first).</p>
+
+<p>Sparse/dense mesh transition happens at the dispatch/combine all2alls; routing is done on dense mesh, and the token sends to EP ranks transitions to sparse mesh. The <code>expert_parallel_region</code> / <code>leave_expert_parallel_region</code> runtime contexts tell the typechecker which mesh is currently active, but add no runtime overhead.</p>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="expert_parallel_region" data-hash="b73784590f" data-render="added">
 @@ -0,0 +146,11 @@ expert_parallel_region
 +
@@ -2448,6 +2449,41 @@ class CrossEntropyFunction(torch.autograd.Function):
 +    if not spmd.is_type_checking():
 +        return tensor
 +    return spmd.reinterpret_mesh(tensor, spmd.current_mesh())
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/moe_layer.py" data-symbol="MoELayer.routed_experts_compute" data-hash="aa40fce594" data-render="new" data-lines="553-566">
+@@ -549,18 +550,20 @@ MoELayer.routed_experts_compute
+             self.token_dispatcher.dispatch_postprocess(hidden_states, probs)
+         )
+         dispatched_input = self._maybe_record_overload_factor(dispatched_input, tokens_per_expert)
+-        if (
+-            hasattr(self, "_inference_token_dispatcher")
+-            and self.is_inference_cuda_graphed_iteration
+-        ):
+-            routing_map = self.token_dispatcher.routing_map
+-            expert_output, mlp_bias = apply_module(self.experts)(
+-                dispatched_input, tokens_per_expert, permuted_probs, routing_map=routing_map
+-            )
+-        else:
+-            expert_output, mlp_bias = apply_module(self.experts)(
+-                dispatched_input, tokens_per_expert, permuted_probs
+-            )
++        with expert_parallel_region():
++            if (
++                hasattr(self, "_inference_token_dispatcher")
++                and self.is_inference_cuda_graphed_iteration
++            ):
++                routing_map = self.token_dispatcher.routing_map
++                expert_output, mlp_bias = apply_module(self.experts)(
++                    dispatched_input, tokens_per_expert, permuted_probs, routing_map=routing_map
++                )
++            else:
++                expert_output, mlp_bias = apply_module(self.experts)(
++                    dispatched_input, tokens_per_expert, permuted_probs
++                )
++        expert_output = leave_expert_parallel_region(expert_output)
+         assert mlp_bias is None, f"mlp_bias is not supported for {type(self.token_dispatcher)}"
+         output = self.token_dispatcher.combine_preprocess(expert_output)
+ 
 </pre>
 <p>
      EP parameter annotations are pretty standard, just on the sparse mesh instead of dense:
@@ -2505,41 +2541,6 @@ class CrossEntropyFunction(torch.autograd.Function):
 +            parallel_state.get_expert_model_parallel_group(): spmd.V,
 +        },
 +    )
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/moe_layer.py" data-symbol="MoELayer.routed_experts_compute" data-hash="aa40fce594" data-render="new" data-lines="553-566">
-@@ -549,18 +550,20 @@ MoELayer.routed_experts_compute
-             self.token_dispatcher.dispatch_postprocess(hidden_states, probs)
-         )
-         dispatched_input = self._maybe_record_overload_factor(dispatched_input, tokens_per_expert)
--        if (
--            hasattr(self, "_inference_token_dispatcher")
--            and self.is_inference_cuda_graphed_iteration
--        ):
--            routing_map = self.token_dispatcher.routing_map
--            expert_output, mlp_bias = apply_module(self.experts)(
--                dispatched_input, tokens_per_expert, permuted_probs, routing_map=routing_map
--            )
--        else:
--            expert_output, mlp_bias = apply_module(self.experts)(
--                dispatched_input, tokens_per_expert, permuted_probs
--            )
-+        with expert_parallel_region():
-+            if (
-+                hasattr(self, "_inference_token_dispatcher")
-+                and self.is_inference_cuda_graphed_iteration
-+            ):
-+                routing_map = self.token_dispatcher.routing_map
-+                expert_output, mlp_bias = apply_module(self.experts)(
-+                    dispatched_input, tokens_per_expert, permuted_probs, routing_map=routing_map
-+                )
-+            else:
-+                expert_output, mlp_bias = apply_module(self.experts)(
-+                    dispatched_input, tokens_per_expert, permuted_probs
-+                )
-+        expert_output = leave_expert_parallel_region(expert_output)
-         assert mlp_bias is None, f"mlp_bias is not supported for {type(self.token_dispatcher)}"
-         output = self.token_dispatcher.combine_preprocess(expert_output)
- 
 </pre>
 <p>The HybridEP backend uses dispatch kernels that aren’t compatible with fake ProcessGroup, so we mock a <code>_fake_dispatch</code> method that simulates it, repeating input tokens to the requested shape, stubbing the actual comms. Like the rest of fake PG, this is enough to simulate distributed behavior (and typechecking correctness), but not for numerical correctness.</p>
 <pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_fake_dispatch" data-hash="6195052234" data-render="added">

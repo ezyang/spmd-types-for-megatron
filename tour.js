@@ -328,12 +328,25 @@
     pre.insertAdjacentElement('afterend', box);
   }
 
+  // <div class="scroll-box" data-show="N">: the box of hunks inside shows the
+  // first N hunks and scrolls for the rest, file header pinned.
+  function scrollBoxes() {
+    Array.prototype.forEach.call(document.querySelectorAll('.scroll-box'), function (wrap) {
+      var box = wrap.querySelector('.tour'), n = +wrap.getAttribute('data-show') || 5;
+      var hunks = box && box.querySelectorAll('.tour-hunk');
+      if (!hunks || hunks.length <= n) return;
+      box.classList.add('scrolling');
+      // .scrolling makes the box position: relative, so offsetTop is box-relative.
+      box.style.maxHeight = hunks[n].offsetTop + 'px';
+    });
+  }
+
   // <div class="pair">: rule hunk on the left, source on the right.  The pair
   // is widened past the text column toward the window edge, and the source
   // scrolls inside the height of the left box, or of the reference rule box
   // (_linear_with_frozen_weight) when the left one is shorter.
   var PAIR_REF = 'megatron/core/spmd/spmd_rules.py::_linear_with_frozen_weight';
-  var PAIR_MAX = 1800;
+  var PAIR_MAX = 1200;
 
   function layoutPairs() {
     var pairs = document.querySelectorAll('.pair');
@@ -518,6 +531,7 @@
   document.addEventListener('DOMContentLoaded', function () {
     renderAll();
     renderSources();
+    scrollBoxes();
     crosslink();
     toc();
     layoutPairs();

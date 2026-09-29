@@ -38,10 +38,14 @@ It reads the repo at the synced head. For another repo, add
 `data-repo="OWNER/NAME" data-rev=SHA` and pass its checkout to sync with
 `--source-repo OWNER/NAME=PATH`; without it the existing text is kept and
 sync warns. Put a rule hunk and its source in a `<div class="pair">` to show
-them side by side: the pair widens, centered on the text column (clamped to
-the space right of the TOC sidebar), and the source
+them side by side: the pair widens to at most 1200px, centered on the text
+column (clamped to the space right of the TOC sidebar), each side scrolls
+horizontally, and the source
 scrolls within the height of the left box (at least that of the
 `_linear_with_frozen_weight` rule box).
+
+Wrap a run of hunks in `<div class="scroll-box" data-show="N">` to show only
+the first N in their shared box and scroll the rest, file header pinned.
 
 `data-context` is how a hunk carries more of the file than its own change, for
 example the whole custom autograd function around a new `spmd_typecheck`.

@@ -403,6 +403,7 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 <tr><td><code>all_to_all(group, x)</code></td><td><code>S(0)</code></td><td><code>S(0)</code></td><td>all-to-all</td><td>all-to-all</td></tr>
 </table>
 
+<div class="scroll-box" data-show="5">
 <pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_copy_to_model_parallel_region" data-hash="79b2971a0e" data-render="added">
 @@ -0,0 +27,7 @@ _copy_to_model_parallel_region
 +
@@ -507,6 +508,8 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 +    spmd.assert_type(input, {group: spmd.S(0)})
 +    spmd.assert_local_type_like(output, input, {group: spmd.S(0)})
 </pre>
+</div>
+
 <pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="rule_for" data-hash="7325f5fab4" data-render="added" data-context="rule_for">
 @@ -0,0 +18,9 @@ rule_for
 +def rule_for(function):

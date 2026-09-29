@@ -77,3 +77,5 @@ pre.source { display: none; }
 .tour.source { overflow-x: visible; }
 .tour-scroll { overflow: auto; }
 .tour.source .tour-head { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.scroll-box > .tour.scrolling { overflow: auto; position: relative; }
+.tour.scrolling .tour-head { position: sticky; top: 0; z-index: 1; }

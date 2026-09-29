@@ -7,8 +7,9 @@ Serves this directory. Every *.html page gets a small editor script injected,
 and each prose block (p, li, h1-h6, summary) outside a hunk is tagged with its
 ordinal in the source file. Double-click a block to edit it in place;
 Ctrl/Cmd+Enter or clicking away saves, Esc cancels. Alt+double-click edits the
-raw HTML instead. Saving rewrites only that element's inner HTML in the file on
-disk, and is refused if the element changed on disk since the page loaded.
+raw HTML instead. Enter starts a new paragraph (or list item); pasting inserts
+plain text. Saving rewrites only that element in the file on disk, and is
+refused if the element changed on disk since the page loaded.
 The page reloads itself when the file changes underneath it (e.g. tour.py sync).
 
 Standard library only; the files on disk stay plain HTML.
@@ -136,11 +137,45 @@ EDIT_JS = r"""
         ta.addEventListener('keydown', keys); ta.focus();
       } else {
         node.innerHTML = j.inner; node.setAttribute('contenteditable', 'true');
-        node.addEventListener('blur', onBlur); node.addEventListener('keydown', keys); node.focus();
+        document.execCommand('defaultParagraphSeparator', false, 'div');
+        node.addEventListener('blur', onBlur); node.addEventListener('keydown', keys);
+        node.addEventListener('paste', onPaste); node.focus();
       }
     });
   });
   function onBlur() { finish(true); }
+  function onPaste(e) {
+    e.preventDefault();
+    document.execCommand('insertText', false, e.clipboardData.getData('text/plain'));
+  }
+  // contenteditable writes Enter as <div>s, pastes styles, and uses &nbsp;. Turn the
+  // edited element back into plain HTML: one string per block the user typed.
+  function blocks(node) {
+    var out = [], cur = document.createElement('div');
+    function flush() {
+      var html = clean(cur);
+      if (html) out.push(html);
+      cur = document.createElement('div');
+    }
+    Array.prototype.slice.call(node.childNodes).forEach(function (c) {
+      if (c.nodeType === 1 && (c.tagName === 'DIV' || c.tagName === 'P')) {
+        flush(); cur.innerHTML = c.innerHTML; flush();
+      } else cur.appendChild(c.cloneNode(true));
+    });
+    flush();
+    return out.length ? out : [''];
+  }
+  function clean(el) {
+    Array.prototype.forEach.call(el.querySelectorAll('[style]'), function (e) { e.removeAttribute('style'); });
+    Array.prototype.forEach.call(el.querySelectorAll('span:not([class]):not([id])'), function (e) {
+      e.replaceWith.apply(e, Array.prototype.slice.call(e.childNodes));
+    });
+    Array.prototype.forEach.call(el.querySelectorAll('a[href]'), function (a) {
+      var h = a.getAttribute('href');
+      if (h.indexOf(location.origin + '/') === 0) a.setAttribute('href', h.slice(location.origin.length).replace(/^\/(index\.html)?(?=#)/, ''));
+    });
+    return el.innerHTML.replace(/\u00a0|&nbsp;/g, ' ').replace(/(\s|<br>)+$/, '').replace(/^(\s|<br>)+/, '');
+  }
   function keys(e) {
     if (e.key === 'Escape') { e.preventDefault(); finish(false); }
     else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); finish(true); }
@@ -149,12 +184,15 @@ EDIT_JS = r"""
     var ed = editing; if (!ed || ed.done) return; ed.done = true;
     var node = ed.node;
     node.removeEventListener('blur', onBlur); node.removeEventListener('keydown', keys);
-    var inner = ed.raw ? node.querySelector('textarea.__raw').value : node.innerHTML;
+    node.removeEventListener('paste', onPaste);
+    var parts = ed.raw ? [node.querySelector('textarea.__raw').value] : blocks(node);
+    var inner = parts.join('');
     node.removeAttribute('contenteditable');
     function restore() { node.innerHTML = ed.rendered; editing = null; }
-    if (!save || inner === ed.orig) { restore(); return; }
-    api('POST', {id: ed.id, orig: ed.orig, inner: inner}).then(function (j) {
+    if (!save || (parts.length === 1 && inner === ed.orig)) { restore(); return; }
+    api('POST', {id: ed.id, orig: ed.orig, blocks: parts}).then(function (j) {
       if (j.status !== 200) { say(j.error, true); restore(); return; }
+      if (parts.length > 1) { sessionStorage.setItem('__scroll', String(scrollY)); location.reload(); return; }
       mtime = j.mtime; node.innerHTML = inner; editing = null; say('saved');
     }, function (err) { say('save failed: ' + err, true); restore(); });
   }
@@ -237,8 +275,16 @@ class Handler(SimpleHTTPRequestHandler):
         i = int(body["id"])
         if not 0 <= i < len(sp) or text[sp[i][1]:sp[i][2]] != body["orig"]:
             return self.json(409, {"error": "element changed on disk; reload the page"})
-        _, end, close = sp[i]
-        new = text[:end] + body["inner"] + text[close:]
+        start, end, close = sp[i]
+        parts = body["blocks"]
+        tag = re.match(r"<(\w+)", text[start:end]).group(1).lower()
+        if len(parts) == 1 or tag not in ("p", "li"):
+            new = text[:end] + " ".join(parts) + text[close:]
+        else:
+            after = text.index(">", close) + 1
+            siblings = [f"<{tag}>{part}</{tag}>" for part in parts[1:]]
+            sep = "\n\n" if tag == "p" else "\n"
+            new = text[:end] + parts[0] + text[close:after] + "".join(sep + x for x in siblings) + text[after:]
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(new)

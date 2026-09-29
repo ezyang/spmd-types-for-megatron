@@ -337,11 +337,19 @@
 
   function layoutPairs() {
     var pairs = document.querySelectorAll('.pair');
+    // Center each pair on the text column, clamped to the space right of the
+    // TOC sidebar (when shown) and the window edge.
+    var toc = document.querySelector('nav.toc');
+    var tocRect = toc && toc.getBoundingClientRect();
+    var lo = (tocRect && tocRect.width ? tocRect.right : 0) + 16;
+    var hi = document.documentElement.clientWidth - 16;
     Array.prototype.forEach.call(pairs, function (pair) {
-      pair.style.width = '';
-      var left = pair.getBoundingClientRect().left;
-      var avail = document.documentElement.clientWidth - left - 16;
-      pair.style.width = Math.max(pair.offsetWidth, Math.min(avail, PAIR_MAX)) + 'px';
+      pair.style.width = pair.style.marginLeft = '';
+      var r = pair.getBoundingClientRect();
+      var w = Math.max(r.width, Math.min(hi - lo, PAIR_MAX));
+      var x = Math.min(Math.max(r.left + r.width / 2 - w / 2, lo), hi - w);
+      pair.style.width = w + 'px';
+      pair.style.marginLeft = Math.min(0, x - r.left) + 'px';
     });
     var ref = document.getElementById(PAIR_REF);
     var refBox = ref && ref.closest('.tour');
@@ -512,6 +520,7 @@
     renderSources();
     crosslink();
     toc();
+    layoutPairs();
     appendix();
   });
 })();

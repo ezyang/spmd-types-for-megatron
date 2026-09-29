@@ -38,7 +38,8 @@ It reads the repo at the synced head. For another repo, add
 `data-repo="OWNER/NAME" data-rev=SHA` and pass its checkout to sync with
 `--source-repo OWNER/NAME=PATH`; without it the existing text is kept and
 sync warns. Put a rule hunk and its source in a `<div class="pair">` to show
-them side by side: the pair widens toward the window edge, and the source
+them side by side: the pair widens, centered on the text column (clamped to
+the space right of the TOC sidebar), and the source
 scrolls within the height of the left box (at least that of the
 `_linear_with_frozen_weight` rule box).
 

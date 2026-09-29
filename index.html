@@ -389,18 +389,18 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 <p>Megatron defines its TP collectives in <code>tp_mappings.py</code>, custom <code>autograd.Fn</code>s like <code>_ReduceFromModelParallelRegion</code> (<code>P</code> -&gt; <code>I</code>), <code>_ReduceScatterToSequenceParallelRegion</code> (<code>P</code> -&gt; <code>S(seq)</code>), which <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#operators">the <code>spmd_types</code> docs</a> actually has a 1-1 mapping for. Registering these is pretty standard; they're just collectives, no compute.</p>
 
 <table class="mapping">
-<tr><th>Megatron function</th><th>src</th><th>dst</th></tr>
-<tr><td><code>copy_to_tensor_model_parallel_region(x)</code></td><td><code>I</code></td><td><code>R</code></td></tr>
-<tr><td><code>reduce_from_tensor_model_parallel_region(x)</code></td><td><code>P</code></td><td><code>I</code></td></tr>
-<tr><td><code>scatter_to_tensor_model_parallel_region(x)</code></td><td><code>I</code></td><td><code>S(-1)</code></td></tr>
-<tr><td><code>gather_from_tensor_model_parallel_region(x)</code></td><td><code>S(-1)</code></td><td><code>I</code></td></tr>
-<tr><td><code>scatter_to_sequence_parallel_region(x)</code></td><td><code>I</code></td><td><code>S(0)</code></td></tr>
-<tr><td><code>gather_from_sequence_parallel_region(x, tensor_parallel_output_grad=True)</code></td><td><code>S(0)</code></td><td><code>R</code></td></tr>
-<tr><td><code>gather_from_sequence_parallel_region(x, tensor_parallel_output_grad=False)</code></td><td><code>S(0)</code></td><td><code>I</code></td></tr>
-<tr><td><code>reduce_scatter_to_sequence_parallel_region(x)</code></td><td><code>P</code></td><td><code>S(0)</code></td></tr>
-<tr><td><code>all_gather_last_dim_from_tensor_parallel_region(x)</code></td><td><code>S(-1)</code></td><td><code>R</code></td></tr>
-<tr><td><code>reduce_scatter_last_dim_to_tensor_parallel_region(x)</code></td><td><code>P</code></td><td><code>S(-1)</code></td></tr>
-<tr><td><code>all_to_all(group, x)</code></td><td><code>S(0)</code></td><td><code>S(0)</code></td></tr>
+<tr><th>Megatron function</th><th>src</th><th>dst</th><th>FWD</th><th>BWD</th></tr>
+<tr><td><code>copy_to_tensor_model_parallel_region(x)</code></td><td><code>I</code></td><td><code>R</code></td><td>no-op</td><td>all-reduce</td></tr>
+<tr><td><code>reduce_from_tensor_model_parallel_region(x)</code></td><td><code>P</code></td><td><code>I</code></td><td>all-reduce</td><td>no-op</td></tr>
+<tr><td><code>scatter_to_tensor_model_parallel_region(x)</code></td><td><code>I</code></td><td><code>S(-1)</code></td><td>shard</td><td>all-gather</td></tr>
+<tr><td><code>gather_from_tensor_model_parallel_region(x)</code></td><td><code>S(-1)</code></td><td><code>I</code></td><td>all-gather</td><td>shard</td></tr>
+<tr><td><code>scatter_to_sequence_parallel_region(x)</code></td><td><code>I</code></td><td><code>S(0)</code></td><td>shard</td><td>all-gather</td></tr>
+<tr><td><code>gather_from_sequence_parallel_region(x, tensor_parallel_output_grad=True)</code></td><td><code>S(0)</code></td><td><code>R</code></td><td>all-gather</td><td>reduce-scatter</td></tr>
+<tr><td><code>gather_from_sequence_parallel_region(x, tensor_parallel_output_grad=False)</code></td><td><code>S(0)</code></td><td><code>I</code></td><td>all-gather</td><td>shard</td></tr>
+<tr><td><code>reduce_scatter_to_sequence_parallel_region(x)</code></td><td><code>P</code></td><td><code>S(0)</code></td><td>reduce-scatter</td><td>all-gather</td></tr>
+<tr><td><code>all_gather_last_dim_from_tensor_parallel_region(x)</code></td><td><code>S(-1)</code></td><td><code>R</code></td><td>all-gather</td><td>reduce-scatter</td></tr>
+<tr><td><code>reduce_scatter_last_dim_to_tensor_parallel_region(x)</code></td><td><code>P</code></td><td><code>S(-1)</code></td><td>reduce-scatter</td><td>all-gather</td></tr>
+<tr><td><code>all_to_all(group, x)</code></td><td><code>S(0)</code></td><td><code>S(0)</code></td><td>all-to-all</td><td>all-to-all</td></tr>
 </table>
 
 <pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_copy_to_model_parallel_region" data-hash="79b2971a0e" data-render="added">

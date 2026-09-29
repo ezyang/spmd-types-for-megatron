@@ -438,6 +438,9 @@ def find_sources(doc: str) -> list[Pre]:
     return pres
 
 
+SOURCE_GAP = 15
+
+
 def source_excerpt(src: str, symbol: str, members: list[str]) -> str | None:
     """Class header plus the named methods, as ``@@ N`` runs."""
     tree = ast.parse(src)
@@ -455,11 +458,15 @@ def source_excerpt(src: str, symbol: str, members: list[str]) -> str | None:
             spans.append((start(n), n.end_lineno))
     if len(spans) - 1 != len(members):
         return None
+    # Short gaps (a class docstring, a blank line) are filled in rather than
+    # shown as a break.
     out = []
     prev_end = None
     for a, b in spans:
-        if prev_end is None or a > prev_end + 1:
+        if prev_end is None or a > prev_end + SOURCE_GAP + 1:
             out.append(f"@@ {a}")
+        else:
+            a = prev_end + 1
         out.extend(lines[a - 1:b])
         prev_end = b
     return "\n".join(out)

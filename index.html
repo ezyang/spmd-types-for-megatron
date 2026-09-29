@@ -545,7 +545,14 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 <pre class="source" data-file="megatron/core/tensor_parallel/layers.py" data-symbol="LinearWithFrozenWeight" data-members="forward,backward">
 @@ 335
 class LinearWithFrozenWeight(torch.autograd.Function):
-@@ 344
+    """Linear operator that does not calculate gradient for weight.
+    This op and LinearWithGradAccumulationAndAsyncCommunication performs
+    mathematically-identical forward and DGRAD.
+
+    Conceptually this op is the same as torch.nn.functional.linear with
+    weight.requires_grad==False, but in experiments they are not identical
+    mathematically."""
+
     @staticmethod
     @custom_fwd
     def forward(ctx, input, weight, bias, allreduce_dgrad, tp_group):
@@ -557,7 +564,7 @@ class LinearWithFrozenWeight(torch.autograd.Function):
         if bias is not None:
             output = output + bias
         return output
-@@ 356
+
     @staticmethod
     @custom_bwd
     def backward(ctx, grad_output):
@@ -599,7 +606,8 @@ class LinearWithFrozenWeight(torch.autograd.Function):
 <pre class="source" data-file="megatron/core/tensor_parallel/layers.py" data-symbol="LinearWithGradAccumulationAndAsyncCommunication" data-members="forward,backward">
 @@ 441
 class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
-@@ 444
+    """See linear_with_grad_accumulation_and_async_allreduce"""
+
     @staticmethod
     @custom_fwd
     def forward(
@@ -646,7 +654,7 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
         if bias is not None:
             output = output + bias
         return output
-@@ 491
+
     @staticmethod
     @custom_bwd
     def backward(ctx, grad_output):
@@ -817,7 +825,10 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
 <pre class="source" data-file="megatron/core/transformer/moe/moe_utils.py" data-symbol="MoEAuxLossAutoScaler" data-members="forward,backward">
 @@ 248
 class MoEAuxLossAutoScaler(torch.autograd.Function):
-@@ 253
+    """An AutoScaler that triggers the backward pass and scales the grad for auxiliary loss."""
+
+    main_loss_backward_scale: Optional[torch.Tensor] = None
+
     @staticmethod
     def forward(ctx, output: torch.Tensor, aux_loss: torch.Tensor) -&gt; torch.Tensor:
         """Preserve the aux_loss by storing it in the context to avoid garbage collection.
@@ -831,7 +842,7 @@ class MoEAuxLossAutoScaler(torch.autograd.Function):
         """
         ctx.save_for_backward(aux_loss)
         return output
-@@ 267
+
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor) -&gt; Tuple[torch.Tensor, torch.Tensor]:
         """Compute and scale the gradient for auxiliary loss..
@@ -871,7 +882,10 @@ class MoEAuxLossAutoScaler(torch.autograd.Function):
 <pre class="source" data-file="megatron/core/transformer/multi_token_prediction.py" data-symbol="MTPLossAutoScaler" data-members="forward,backward">
 @@ 566
 class MTPLossAutoScaler(torch.autograd.Function):
-@@ 571
+    """An AutoScaler that triggers the backward pass and scales the grad for mtp loss."""
+
+    main_loss_backward_scale: torch.Tensor = torch.tensor(1.0)
+
     @staticmethod
     def forward(ctx, output: torch.Tensor, mtp_loss: torch.Tensor):
         """Preserve the mtp by storing it in the context to avoid garbage collection.
@@ -885,7 +899,7 @@ class MTPLossAutoScaler(torch.autograd.Function):
         """
         ctx.save_for_backward(mtp_loss)
         return output
-@@ 585
+
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
         """Compute and scale the gradient for mtp loss..
@@ -927,7 +941,10 @@ class MTPLossAutoScaler(torch.autograd.Function):
 <pre class="source" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch" data-members="forward,backward">
 @@ 388
 class HybridEPDispatch(torch.autograd.Function):
-@@ 393
+    '''
+    Fused dispatch operation for permute + dispatch a2a + permute using the HybridEP backend
+    '''
+
     @staticmethod
     def forward(
         ctx,
@@ -1023,7 +1040,7 @@ class HybridEPDispatch(torch.autograd.Function):
             tokens_per_expert,
             handle,
         )
-@@ 489
+
     @staticmethod
     def backward(ctx, grad_x, grad_probs, grad_scaling_factor, grad_tokens_per_expert, grad_handle):
         '''
@@ -1073,7 +1090,10 @@ class HybridEPDispatch(torch.autograd.Function):
 @@ 523
 @internal_api
 class HybridEPCombine(torch.autograd.Function):
-@@ 529
+    '''
+    Fused combine operation for permute + combine a2a + permute using the HybridEP backend
+    '''
+
     @staticmethod
     def forward(ctx, x, handle, num_permuted_tokens=None, pad_multiple=None, fused=False):
         '''
@@ -1095,7 +1115,7 @@ class HybridEPCombine(torch.autograd.Function):
         ctx.num_permuted_tokens = num_permuted_tokens
         ctx.fused = fused
         return combined_hidden
-@@ 551
+
     @staticmethod
     def backward(ctx, grad_x):
         '''
@@ -1171,7 +1191,10 @@ class HybridEPCombine(torch.autograd.Function):
 <pre class="source" data-file="transformer_engine/pytorch/module/linear.py" data-symbol="_Linear" data-members="forward,backward" data-repo="NVIDIA/TransformerEngine" data-rev="42b840051647eef89761a16dfdff87e82bb253ab">
 @@ 1075
 class _Linear(torch.autograd.Function):
-@@ 1080
+    """Linear semi-top level module
+    Calls custom cuda extensions.
+    """
+
     @staticmethod
     def forward(
         ctx,
@@ -1224,7 +1247,7 @@ class _Linear(torch.autograd.Function):
                 ctx.reduce_and_update_bwd_fp8_tensors = False
 
         return out, new_weight_workspace
-@@ 1133
+
     @staticmethod
     def backward(
         ctx, grad_output: torch.Tensor, _grad_weight_workspace
@@ -1273,7 +1296,10 @@ class _Linear(torch.autograd.Function):
 <pre class="source" data-file="transformer_engine/pytorch/module/layernorm_linear.py" data-symbol="_LayerNormLinear" data-members="forward,backward" data-repo="NVIDIA/TransformerEngine" data-rev="42b840051647eef89761a16dfdff87e82bb253ab">
 @@ 86
 class _LayerNormLinear(torch.autograd.Function):
-@@ 91
+    """LayerNormLinear semi-top level module
+    Calls custom cuda extensions.
+    """
+
     @staticmethod
     def forward(
         ctx,
@@ -1755,7 +1781,7 @@ class _LayerNormLinear(torch.autograd.Function):
             else:
                 ln_out_for_return = ln_out_return.view(inp_shape)
         return out, ln_out_for_return, new_weight_workspace
-@@ 573
+
     @staticmethod
     def backward(
         ctx, *grad_outputs: Tuple[torch.Tensor, ...]
@@ -2291,7 +2317,12 @@ class _LayerNormLinear(torch.autograd.Function):
 <pre class="source" data-file="transformer_engine/pytorch/cross_entropy.py" data-symbol="CrossEntropyFunction" data-members="forward,backward" data-repo="NVIDIA/TransformerEngine" data-rev="42b840051647eef89761a16dfdff87e82bb253ab">
 @@ 19
 class CrossEntropyFunction(torch.autograd.Function):
-@@ 26
+    """
+    This class implements a custom autograd function for the Cross Entropy loss. The input tensor can be in BF16/FP32, the
+    loss and gradient calculation happens in FP32 only. The returned loss is always in FP32, the input gradients are upcasted
+    to the dataype of the input.
+    """
+
     @staticmethod
     def forward(
         ctx,
@@ -2331,7 +2362,7 @@ class CrossEntropyFunction(torch.autograd.Function):
         ctx.save_for_backward(inp.detach())
         ctx.is_cg_capturable = is_cg_capturable
         return loss
-@@ 66
+
     @staticmethod
     def backward(ctx, grad_output):
         """

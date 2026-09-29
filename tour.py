@@ -7,7 +7,14 @@ rewrites in index.html / scratch.html are:
   * the text and ``data-hash`` of ``<pre class="hunk">`` elements,
   * the ``content`` of the ``tour-*`` ``<meta>`` tags,
   * inserted ``<!-- SYNC:... -->`` marker comments,
-  * an appended ``<section id="unplaced">``.
+  * an appended ``<section id="unplaced">``,
+  * the text of ``<pre class="source">`` elements.
+
+A ``<pre class="source" data-file data-symbol data-members>`` holds unchanged
+source: the header of class ``data-symbol`` plus the listed methods, each run
+prefixed by ``@@ N`` (its first line number).  It reads the repo at the synced
+head, or at ``data-rev`` in the checkout given by ``--source-repo SLUG=PATH``
+when it carries ``data-repo="SLUG"``.
 
 A ``data-context`` attribute on a hunk widens what ``sync`` writes into it: the
 whole enclosing class, the whole file, or a named symbol, with the unit's
@@ -422,6 +429,69 @@ def pre_html(unit: Unit, render: str | None = None) -> str:
     return f"<pre {a}>\n{html.escape(unit.text, quote=False)}\n</pre>"
 
 
+def find_sources(doc: str) -> list[Pre]:
+    pres = []
+    for m in PRE_RE.finditer(doc):
+        attrs = {html.unescape(k): html.unescape(v) for k, v in ATTR_RE.findall(m.group("attrs"))}
+        if "source" in attrs.get("class", "").split():
+            pres.append(Pre(m.start(), m.end(), attrs, m.span("attrs"), html.unescape(m.group("body"))))
+    return pres
+
+
+def source_excerpt(src: str, symbol: str, members: list[str]) -> str | None:
+    """Class header plus the named methods, as ``@@ N`` runs."""
+    tree = ast.parse(src)
+    cls = next((n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == symbol), None)
+    if cls is None:
+        return None
+    lines = src.split("\n")
+    start = lambda n: min([d.lineno for d in getattr(n, "decorator_list", [])] + [n.lineno])
+    head_end = start(cls.body[0]) - 1
+    while head_end > cls.lineno and lines[head_end - 1].strip()[:1] in ("", "#"):
+        head_end -= 1
+    spans = [(start(cls), head_end)]
+    for n in cls.body:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in members:
+            spans.append((start(n), n.end_lineno))
+    if len(spans) - 1 != len(members):
+        return None
+    out = []
+    prev_end = None
+    for a, b in spans:
+        if prev_end is None or a > prev_end + 1:
+            out.append(f"@@ {a}")
+        out.extend(lines[a - 1:b])
+        prev_end = b
+    return "\n".join(out)
+
+
+def sync_sources(doc: str, repo: str, head: str, source_repos: dict[str, str], counts: dict) -> str:
+    pieces, pos = [], 0
+    for pre in find_sources(doc):
+        pieces.append(doc[pos:pre.start])
+        pos = pre.end
+        file, symbol = pre.key
+        slug = pre.attrs.get("data-repo")
+        path, rev = (source_repos.get(slug), pre.attrs.get("data-rev")) if slug else (repo, head)
+        text = None
+        if path and rev:
+            src = git_show(path, rev, file)
+            if src is not None:
+                members = [m for m in pre.attrs.get("data-members", "").split(",") if m]
+                text = source_excerpt(src, symbol, members)
+        if text is None:
+            where = f"{slug or repo}@{rev}" if path else f"{slug} (pass --source-repo {slug}=PATH)"
+            print(f"warning: source {file}::{symbol} not refreshed from {where}", file=sys.stderr)
+            pieces.append(doc[pre.start:pre.end])
+            counts["stale"] += 1
+            continue
+        counts["refreshed"] += 1
+        attrs = doc[pre.attrs_span[0]:pre.attrs_span[1]]
+        pieces.append(f"<pre{attrs}>\n{html.escape(text, quote=False)}\n</pre>")
+    pieces.append(doc[pos:])
+    return "".join(pieces)
+
+
 def meta_get(doc: str, name: str) -> str | None:
     m = re.search(rf'<meta\s+name="tour-{name}"\s+content="([^"]*)"', doc)
     return html.unescape(m.group(1)) if m else None
@@ -605,6 +675,10 @@ def cmd_sync(args: argparse.Namespace) -> int:
     docs = {}
     for path in documents():
         docs[path] = sync_document(read(path), units, placed, counts)
+    source_repos = dict(kv.split("=", 1) for kv in args.source_repo)
+    source_counts = {"refreshed": 0, "stale": 0}
+    for path in docs:
+        docs[path] = sync_sources(docs[path], repo, head, source_repos, source_counts)
     new_units = sorted((u for k, u in units.items() if k not in placed), key=lambda u: u.order)
     if new_units:
         counts["new"] = len(new_units)
@@ -613,6 +687,8 @@ def cmd_sync(args: argparse.Namespace) -> int:
         write(path, meta_set(doc, "head", head))
     print(f"head {head}")
     print("  ".join(f"{k}: {v}" for k, v in counts.items()))
+    if any(source_counts.values()):
+        print("sources " + "  ".join(f"{k}: {v}" for k, v in source_counts.items()))
     for path, ln, kind, what in report_markers(list(docs)):
         print(f"{path}:{ln}: SYNC:{kind} {what}")
     return 0
@@ -665,6 +741,8 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(fn=cmd_init)
     p = sub.add_parser("sync", help="refresh hunks against a new head")
     p.add_argument("repo"); p.add_argument("head", nargs="?")
+    p.add_argument("--source-repo", action="append", default=[], metavar="SLUG=PATH",
+                   help="checkout for <pre class=\"source\" data-repo=SLUG>")
     p.set_defaults(fn=cmd_sync)
     p = sub.add_parser("check", help="fail if markers remain or a unit is unplaced")
     p.add_argument("repo", nargs="?")

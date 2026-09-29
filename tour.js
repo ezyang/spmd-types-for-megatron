@@ -287,6 +287,80 @@
     }
   }
 
+  // <pre class="source">: unchanged source written by sync as "@@ N" runs.
+  // Rendered like a hunk, without diff colouring, "⋯" between runs.
+  function renderSource(pre) {
+    var file = pre.getAttribute('data-file') || '', symbol = pre.getAttribute('data-symbol') || '';
+    var slug = pre.getAttribute('data-repo') || repo, rev = pre.getAttribute('data-rev') || head;
+    var blob = 'https://github.com/' + slug + '/blob/' + rev + '/' + file;
+    var box = el('div', 'tour source'), headRow = el('div', 'tour-head');
+    var fileLink = el('a', null, (slug === repo ? '' : slug.split('/').pop() + ': ') + file);
+    fileLink.href = blob;
+    headRow.appendChild(fileLink);
+    headRow.appendChild(el('span', 'sym', symbol));
+    box.appendChild(headRow);
+    var scroll = el('div', 'tour-scroll'), table = el('table'), tbody = el('tbody'), n = 0;
+    pre.textContent.replace(/^\n/, '').replace(/\n$/, '').split('\n').forEach(function (line) {
+      var m = /^@@ (\d+)$/.exec(line);
+      if (m) {
+        if (n) {
+          var sep = el('tr', 'sep');
+          sep.appendChild(el('td', 'ln'));
+          sep.appendChild(el('td', 'code', '⋯'));
+          tbody.appendChild(sep);
+        }
+        n = +m[1];
+        return;
+      }
+      var tr = el('tr', 'ctx'), ln = el('td', 'ln'), a = el('a', null, String(n));
+      a.href = blob + '#L' + n++;
+      ln.appendChild(a);
+      tr.appendChild(ln);
+      var code = el('td', 'code'), c = el('code', 'language-python', line);
+      code.appendChild(c);
+      window.hljs.highlightElement(c);
+      tr.appendChild(code);
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    box.appendChild(scroll);
+    pre.insertAdjacentElement('afterend', box);
+  }
+
+  // <div class="pair">: rule hunk on the left, source on the right.  The pair
+  // is widened past the text column toward the window edge, and the source
+  // scrolls inside the height of the left box, or of the reference rule box
+  // (_linear_with_frozen_weight) when the left one is shorter.
+  var PAIR_REF = 'megatron/core/spmd/spmd_rules.py::_linear_with_frozen_weight';
+  var PAIR_MAX = 1800;
+
+  function layoutPairs() {
+    var pairs = document.querySelectorAll('.pair');
+    Array.prototype.forEach.call(pairs, function (pair) {
+      pair.style.width = '';
+      var left = pair.getBoundingClientRect().left;
+      var avail = document.documentElement.clientWidth - left - 16;
+      pair.style.width = Math.max(pair.offsetWidth, Math.min(avail, PAIR_MAX)) + 'px';
+    });
+    var ref = document.getElementById(PAIR_REF);
+    var refBox = ref && ref.closest('.tour');
+    Array.prototype.forEach.call(pairs, function (pair) {
+      var boxes = pair.querySelectorAll(':scope > .tour');
+      var src = pair.querySelector(':scope > .tour.source');
+      if (boxes.length < 2 || !src) return;
+      var target = Math.max(boxes[0].offsetHeight, refBox ? refBox.offsetHeight : 0);
+      var scroll = src.querySelector('.tour-scroll');
+      scroll.style.maxHeight = (target - (src.offsetHeight - scroll.offsetHeight) - 2) + 'px';
+    });
+  }
+
+  function renderSources() {
+    Array.prototype.forEach.call(document.querySelectorAll('pre.source'), renderSource);
+    layoutPairs();
+    window.addEventListener('resize', layoutPairs);
+  }
+
   function slug(s) {
     return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   }
@@ -435,6 +509,7 @@
 
   document.addEventListener('DOMContentLoaded', function () {
     renderAll();
+    renderSources();
     crosslink();
     toc();
     appendix();

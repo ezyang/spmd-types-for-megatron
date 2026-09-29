@@ -8,7 +8,7 @@ section's files out of the sidebar and opens it when a link (`#file::symbol`,
 keeps the diff hunks in sync with the branch; you write the prose around them.
 
     python3 tour.py init  REPO_PATH BASE HEAD   # merge-base, extract units into scratch.html, write meta tags
-    python3 tour.py sync  REPO_PATH [HEAD]      # refresh hunks against HEAD (default: repo's checked-out HEAD)
+    python3 tour.py sync  REPO_PATH [HEAD] [--source-repo SLUG=PATH]  # refresh hunks against HEAD (default: repo's checked-out HEAD)
     python3 tour.py check [REPO_PATH]           # fail if SYNC: markers remain or a unit is in no document
     python3 tour.py list                        # reading order per document: <h2> headings, file::symbol under each
 
@@ -27,6 +27,20 @@ text by hand; move the whole `<pre>` instead, and shape it with attributes:
     data-context="class"|"file"|SYMBOL widen to the enclosing class / whole file / a
                                        qualified symbol; every change inside that
                                        span is shown as a diff
+
+Unchanged source that a hunk should be read against (for example the
+autograd function a rule is for) goes in a `<pre class="source">`, also
+machine-owned; `sync` writes the class header and the listed methods:
+
+    <pre class="source" data-file=PATH data-symbol=CLASS data-members="forward,backward"></pre>
+
+It reads the repo at the synced head. For another repo, add
+`data-repo="OWNER/NAME" data-rev=SHA` and pass its checkout to sync with
+`--source-repo OWNER/NAME=PATH`; without it the existing text is kept and
+sync warns. Put a rule hunk and its source in a `<div class="pair">` to show
+them side by side: the pair widens toward the window edge, and the source
+scrolls within the height of the left box (at least that of the
+`_linear_with_frozen_weight` rule box).
 
 `data-context` is how a hunk carries more of the file than its own change, for
 example the whole custom autograd function around a new `spmd_typecheck`.

@@ -71,3 +71,9 @@ table.diffstat td.bar span.del { background: #cf222e; }
 table.mapping { border-collapse: collapse; margin: 1em 0; font-size: 13px; }
 table.mapping th, table.mapping td { border: 1px solid #ddd; padding: 3px 8px; text-align: left; vertical-align: top; }
 table.mapping th { background: #f6f8fa; font-family: Helvetica, Arial, sans-serif; }
+pre.source { display: none; }
+.pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; margin: 1.2em 0; align-items: start; }
+.pair > .tour { margin: 0; }
+.tour.source { overflow-x: visible; }
+.tour-scroll { overflow: auto; }
+.tour.source .tour-head { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

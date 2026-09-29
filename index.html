@@ -2543,7 +2543,57 @@ class CrossEntropyFunction(torch.autograd.Function):
 +    )
 </pre>
 
-<h3>Fake ProcessGroup setup &amp; compatibility</h3>
+<p>For typechecking to pass we annotate the bit tensor HybridEP uses to track <a href="https://github.com/NVIDIA/Megatron-LM/blob/main/docs/user-guide/features/paged_stash.md">paged activation stashing overflow</a>.</p>
+<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dispatcher_state" data-hash="fcba4332b3" data-render="added">
+@@ -0,0 +182,11 @@ _annotate_dispatcher_state
++
++
++def _annotate_dispatcher_state(dispatcher: MoEFlexTokenDispatcher) -&gt; None:
++    """Type the per-rank overflow flag a HybridEP dispatcher accumulates across steps.
++
++    Each rank ORs its own dispatch overflow into this flag, so it varies
++    everywhere. Paged stashing all-reduces it before acting on it.
++    """
++    over_budget = dispatcher.check_over_budget()
++    if over_budget is not None:
++        spmd.assert_type(over_budget, {"TP": spmd.V, "DP": spmd.V, "CP": spmd.V})
+</pre>
+<h3>Other no_typecheck uses</h3>
+<pre class="hunk" data-file="megatron/core/transformer/moe/experts.py" data-symbol="TEGroupedMLP._fused_forward" data-hash="c35676443a">
+@@ -979,7 +980,11 @@ TEGroupedMLP._fused_forward
+         # Note: The fused impl is stored in a tuple to avoid
+         # registering submodules.
+         if self._fused_ops is None:
+-            self._fused_ops = (self._make_fused_ops(),)
++            # Building the fused module is setup, not computation: it allocates
++            # placeholder weights that are immediately replaced by this module's own
++            # parameters, so it is excluded from SPMD type checking.
++            with spmd.no_typecheck():
++                self._fused_ops = (self._make_fused_ops(),)
+         (ops,) = self._fused_ops
+ 
+         # Apply padding if needed
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/random.py" data-symbol="CudaRNGStatesTracker.fork" data-hash="7bb7f004e7">
+@@ -315,8 +316,11 @@ CudaRNGStatesTracker.fork
+         try:
+             yield
+         finally:
+-            # Throw a warning if cpu RNG state changed
+-            if not torch.all(cpu_rng_state == torch.get_rng_state()).item():
++            # Throw a warning if cpu RNG state changed. Comparing host RNG state is
++            # bookkeeping rather than model computation, so it is not type-checked.
++            with spmd.no_typecheck():
++                cpu_rng_state_changed = not torch.all(cpu_rng_state == torch.get_rng_state()).item()
++            if cpu_rng_state_changed:
+                 logging.getLogger(__name__).warning('CPU RNG state changed within GPU RNG context')
+             # Check if the current state name is the same as the desired state name.
+             if self._current_state_name != name:
+</pre>
+</section>
+
+<section id="fake-process-group">
+<h2>Fake ProcessGroup setup &amp; compatibility</h2>
 <p><code>_fake_distributed</code> starts a single rank with PyTorch's fake backend and a <code>FakeStore</code>, then initializes Megatron's parallel state for the requested topology. Unlike NCCL, fake collectives don't do any comms, reduction, or data movement, just returning placeholder outputs that let the checker propagate &amp; check <code>spmd_types</code>, without being numerically accurate.</p>
 <pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="_fake_distributed" data-hash="1c1edca18a" data-render="added">
 @@ -0,0 +204,23 @@ _fake_distributed
@@ -2679,53 +2729,6 @@ class CrossEntropyFunction(torch.autograd.Function):
          dispatched_hidden, _, _, _, _ = _hybrid_ep_buffer.dispatch_with_permute(
              hidden=grad_x,
              scaling_factor=None,
-</pre>
-<p>For typechecking to pass we annotate the bit tensor HybridEP uses to track <a href="https://github.com/NVIDIA/Megatron-LM/blob/main/docs/user-guide/features/paged_stash.md">paged activation stashing overflow</a>.</p>
-<pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dispatcher_state" data-hash="fcba4332b3" data-render="added">
-@@ -0,0 +182,11 @@ _annotate_dispatcher_state
-+
-+
-+def _annotate_dispatcher_state(dispatcher: MoEFlexTokenDispatcher) -&gt; None:
-+    """Type the per-rank overflow flag a HybridEP dispatcher accumulates across steps.
-+
-+    Each rank ORs its own dispatch overflow into this flag, so it varies
-+    everywhere. Paged stashing all-reduces it before acting on it.
-+    """
-+    over_budget = dispatcher.check_over_budget()
-+    if over_budget is not None:
-+        spmd.assert_type(over_budget, {"TP": spmd.V, "DP": spmd.V, "CP": spmd.V})
-</pre>
-<h3>Other no_typecheck uses</h3>
-<pre class="hunk" data-file="megatron/core/transformer/moe/experts.py" data-symbol="TEGroupedMLP._fused_forward" data-hash="c35676443a">
-@@ -979,7 +980,11 @@ TEGroupedMLP._fused_forward
-         # Note: The fused impl is stored in a tuple to avoid
-         # registering submodules.
-         if self._fused_ops is None:
--            self._fused_ops = (self._make_fused_ops(),)
-+            # Building the fused module is setup, not computation: it allocates
-+            # placeholder weights that are immediately replaced by this module's own
-+            # parameters, so it is excluded from SPMD type checking.
-+            with spmd.no_typecheck():
-+                self._fused_ops = (self._make_fused_ops(),)
-         (ops,) = self._fused_ops
- 
-         # Apply padding if needed
-</pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/random.py" data-symbol="CudaRNGStatesTracker.fork" data-hash="7bb7f004e7">
-@@ -315,8 +316,11 @@ CudaRNGStatesTracker.fork
-         try:
-             yield
-         finally:
--            # Throw a warning if cpu RNG state changed
--            if not torch.all(cpu_rng_state == torch.get_rng_state()).item():
-+            # Throw a warning if cpu RNG state changed. Comparing host RNG state is
-+            # bookkeeping rather than model computation, so it is not type-checked.
-+            with spmd.no_typecheck():
-+                cpu_rng_state_changed = not torch.all(cpu_rng_state == torch.get_rng_state()).item()
-+            if cpu_rng_state_changed:
-                 logging.getLogger(__name__).warning('CPU RNG state changed within GPU RNG context')
-             # Check if the current state name is the same as the desired state name.
-             if self._current_state_name != name:
 </pre>
 </section>
 

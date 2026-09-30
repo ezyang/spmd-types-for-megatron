@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>scratch</title>
-<meta name="tour-repo" content="ezyang/Megatron-LM">
+<meta name="tour-repo" content="pianpwk/Megatron-LM">
 <meta name="tour-base" content="99a108127dc4441da2ac1b71774549bb2d841608">
-<meta name="tour-head" content="41c7bf251b68fa5be1ac1a4df2a2a98762d31018">
-<meta name="tour-compare" content="https://github.com/ezyang/Megatron-LM/compare/mlperf-enhancements...review/spmd-types-totality-20260901">
+<meta name="tour-head" content="c605c8d9f2b9b42369972d4cea0f67189d931f61">
+<meta name="tour-compare" content="https://github.com/pianpwk/Megatron-LM/compare/99a108127dc4441da2ac1b71774549bb2d841608...spmd-rules-einsum">
 <link rel="stylesheet" href="tour.css">
 <script src="tour.js" defer></script>
 </head>
@@ -16,7 +16,7 @@
 <section id="omitted-mechanical-diff">
 <h2>Omitted mechanical diff</h2>
 <pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="rule_for.decorate" data-hash="d72b44dec7" data-render="added">
-@@ -0,0 +20,5 @@ rule_for
+@@ -0,0 +22,5 @@ rule_for
 +
 +    def decorate(rule):
 +        if function is not None:
@@ -269,6 +269,19 @@
          fused_compute_score_for_moe_aux_loss,
          fused_moe_aux_loss,
          fused_topk_with_score_function,
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_mtp_loss_autoscaler" data-hash="e32aa70c09" data-render="added">
+@@ -0,0 +138,10 @@ _mtp_loss_autoscaler
++
++
++@rule_for(mtp.MTPLossAutoScaler)
++def _mtp_loss_autoscaler(out, *, output):
++    """The forward is the identity on ``output``.
++
++    ``mtp_loss`` only contributes a gradient in backward, so it must not
++    influence the result's type; the generic local rule would let it.
++    """
++    rules.output(out, output)
 </pre>
 </section>
 </body>

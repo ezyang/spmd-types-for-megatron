@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Using spmd_types in Megatron</title>
-<meta name="tour-repo" content="ezyang/Megatron-LM">
+<meta name="tour-repo" content="pianpwk/Megatron-LM">
 <meta name="tour-base" content="99a108127dc4441da2ac1b71774549bb2d841608">
-<meta name="tour-head" content="41c7bf251b68fa5be1ac1a4df2a2a98762d31018">
-<meta name="tour-compare" content="https://github.com/ezyang/Megatron-LM/compare/mlperf-enhancements...review/spmd-types-totality-20260901">
+<meta name="tour-head" content="c605c8d9f2b9b42369972d4cea0f67189d931f61">
+<meta name="tour-compare" content="https://github.com/pianpwk/Megatron-LM/compare/99a108127dc4441da2ac1b71774549bb2d841608...spmd-rules-einsum">
 <link rel="stylesheet" href="vendor/highlight.js/github.min.css">
 <link rel="stylesheet" href="tour.css">
 <script src="vendor/highlight.js/highlight-python.js" defer></script>
@@ -85,8 +85,8 @@ TODO: switch DSv3 to global spmd types
 
 <p>We maintain a local function registry in the rules module:</p>
 
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="&lt;module&gt;" data-hash="a69571b6e9" data-render="added">
-@@ -0,0 +1,15 @@
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="&lt;module&gt;" data-hash="5601b2f8c8" data-render="added">
+@@ -0,0 +1,17 @@
 +"""SPMD contracts for Megatron operators and custom autograd functions."""
 +
 +from __future__ import annotations
@@ -94,6 +94,8 @@ TODO: switch DSv3 to global spmd types
 +import inspect
 +
 +import spmd_types as spmd
++import torch
++from spmd_types import rules
 +
 +from megatron.core import utils as megatron_utils
 +from megatron.core.extensions import transformer_engine as te_extension
@@ -102,11 +104,11 @@ TODO: switch DSv3 to global spmd types
 +from megatron.core.tensor_parallel import mappings as tp_mappings
 +from megatron.core.transformer import multi_token_prediction as mtp
 +from megatron.core.transformer.moe import fused_a2a, moe_utils
-@@ -0,0 +211,3 @@ def _assert_te_linear_types(out, inp, options):
+@@ -0,0 +209,3 @@ def _te_linear_output(inp, weight, options):
 +
 +
 +_te_extension = te_extension if te_extension.HAVE_TE else None
-@@ -0,0 +253,25 @@ def _te_parallel_cross_entropy(output, *, inp, target, dist_process_group):
+@@ -0,0 +250,25 @@ def _te_parallel_cross_entropy(*, inp, target, reduce_loss, dist_process_group):
 +
 +
 +LOCAL_AUTOGRAD_FUNCTIONS = [
@@ -386,7 +388,7 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 
 <p>Custom <code>autograd.Fn</code>s are typechecking blackboxes, so if they perform collectives, the standard local SPMD rules probably don't apply. For such functions, we can write SPMD type rules, i.e. how the function changes types. This Megatron patch aims for least intrusiveness, so we keep the rules in the <code>spmd_rules.py</code> side-registry, but you could also define them inline as <code>spmd_typecheck</code> methods (see <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/rules.md"><code>docs/rules.md</code></a>).</p>
 
-<p>Megatron defines its TP collectives in <code>tp_mappings.py</code>, custom <code>autograd.Fn</code>s like <code>_ReduceFromModelParallelRegion</code> (<code>P</code> -&gt; <code>I</code>), <code>_ReduceScatterToSequenceParallelRegion</code> (<code>P</code> -&gt; <code>S(seq)</code>), which <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#operators">the <code>spmd_types</code> docs</a> actually has a 1-1 mapping for. Registering these is pretty standard; they're just collectives, no compute.</p>
+<p>Megatron defines its TP collectives in <code>tp_mappings.py</code>, custom <code>autograd.Fn</code>s like <code>_ReduceFromModelParallelRegion</code> (<code>P</code> -&gt; <code>I</code>), <code>_ReduceScatterToSequenceParallelRegion</code> (<code>P</code> -&gt; <code>S(seq)</code>), which <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#operators">the <code>spmd_types</code> docs</a> actually has a 1-1 mapping for. Registering these is pretty standard as they're just plain collectives, and the rules API actually has direct <code>rules.all_reduce</code>, <code>rules.all_gather</code> functions you can call, to signify e.g. the FWD behaves like a <code>P</code> -&gt; <code>I</code>, <code>S(i)</code> -&gt; <code>R</code>, etc.</p>
 
 <table class="mapping">
 <tr><th>Megatron function</th><th>src</th><th>dst</th><th>FWD</th><th>BWD</th></tr>
@@ -404,114 +406,117 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 </table>
 
 <div class="scroll-box" data-show="5">
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_copy_to_model_parallel_region" data-hash="79b2971a0e" data-render="added">
-@@ -0,0 +27,7 @@ _copy_to_model_parallel_region
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_copy_to_model_parallel_region" data-hash="ccfcb97ea0" data-render="added">
+@@ -0,0 +29,6 @@ _copy_to_model_parallel_region
 +
 +
 +@rule_for(tp_mappings._CopyToModelParallelRegion)
-+def _copy_to_model_parallel_region(output, *, input_, group):
-+    """Type the identity forward and all-reduce backward."""
-+    spmd.assert_type(input_, {group: spmd.I})
-+    spmd.assert_local_type_like(output, input_, {group: spmd.R})
++def _copy_to_model_parallel_region(*, input_, group):
++    """Identity forward, all-reduce backward."""
++    return rules.convert(input_, group, src=spmd.I, dst=spmd.R)
 </pre>
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_reduce_from_model_parallel_region" data-hash="3e3c4f6427" data-render="added">
-@@ -0,0 +34,10 @@ _reduce_from_model_parallel_region
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_summed_type" data-hash="60c5361002" data-render="added">
+@@ -0,0 +35,10 @@ _summed_type
++
++
++def _summed_type(x, group):
++    """The type a reduction over ``group`` sums: a pending ``P``, else ``V``.
++
++    ``rules.einsum`` makes a sharded contraction ``P`` on global mesh axes; on
++    local ones it ignores shard dimensions and the product stays ``V``.
++    """
++    axis = spmd.normalize_axis(group)
++    return spmd.P if spmd.get_local_type(x).get(axis) is spmd.P else spmd.V
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_reduce_from_model_parallel_region" data-hash="4a95a6a7f2" data-render="added">
+@@ -0,0 +45,9 @@ _reduce_from_model_parallel_region
 +
 +
 +@rule_for(tp_mappings._ReduceFromModelParallelRegion)
 +def _reduce_from_model_parallel_region(output, *, input_, group):
-+    """Type the all-reduce forward and identity backward."""
-+    spmd.assert_type(input_, {group: spmd.V})
++    """All-reduce forward, identity backward."""
 +    # I adds a gradient promise on top of R. A result with no gradient, such
 +    # as router token counts, is typed R so it can mix freely with V.
-+    output_type = spmd.I if output.requires_grad else spmd.R
-+    spmd.assert_local_type_like(output, input_, {group: output_type})
++    dst = spmd.I if output.requires_grad else spmd.R
++    rules.all_reduce(input_, group, src=_summed_type(input_, group), dst=dst, out=output)
 </pre>
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_scatter_to_model_parallel_region" data-hash="94c9c08e9f" data-render="added">
-@@ -0,0 +44,7 @@ _scatter_to_model_parallel_region
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_scatter_to_model_parallel_region" data-hash="c57b7938b5" data-render="added">
+@@ -0,0 +54,6 @@ _scatter_to_model_parallel_region
 +
 +
 +@rule_for(tp_mappings._ScatterToModelParallelRegion)
-+def _scatter_to_model_parallel_region(output, *, input_, group):
-+    """Type the last-dimension split and gather backward."""
-+    spmd.assert_type(input_, {group: spmd.I})
-+    spmd.assert_local_type_like(output, input_, {group: spmd.S(-1)})
++def _scatter_to_model_parallel_region(*, input_, group):
++    """Last-dimension split forward, gather backward."""
++    return rules.convert(input_, group, src=spmd.I, dst=spmd.S(-1))
 </pre>
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_gather_from_model_parallel_region" data-hash="9652e73146" data-render="added">
-@@ -0,0 +51,7 @@ _gather_from_model_parallel_region
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_gather_from_model_parallel_region" data-hash="a962a7b121" data-render="added">
+@@ -0,0 +60,6 @@ _gather_from_model_parallel_region
 +
 +
 +@rule_for(tp_mappings._GatherFromModelParallelRegion)
-+def _gather_from_model_parallel_region(output, *, input_, group):
-+    """Type the last-dimension gather and split backward."""
-+    spmd.assert_type(input_, {group: spmd.S(-1)})
-+    spmd.assert_local_type_like(output, input_, {group: spmd.I})
++def _gather_from_model_parallel_region(*, input_, group):
++    """Last-dimension gather forward, split backward."""
++    return rules.all_gather(input_, group, src=spmd.S(-1), dst=spmd.I)
 </pre>
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_scatter_to_sequence_parallel_region" data-hash="14a740334a" data-render="added">
-@@ -0,0 +58,7 @@ _scatter_to_sequence_parallel_region
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_scatter_to_sequence_parallel_region" data-hash="04178d705b" data-render="added">
+@@ -0,0 +66,6 @@ _scatter_to_sequence_parallel_region
 +
 +
 +@rule_for(tp_mappings._ScatterToSequenceParallelRegion)
-+def _scatter_to_sequence_parallel_region(output, *, input_, group):
-+    """Type the sequence split and gather backward."""
-+    spmd.assert_type(input_, {group: spmd.I})
-+    spmd.assert_local_type_like(output, input_, {group: spmd.S(0)})
++def _scatter_to_sequence_parallel_region(*, input_, group):
++    """Sequence split forward, gather backward."""
++    return rules.convert(input_, group, src=spmd.I, dst=spmd.S(0))
 </pre>
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_gather_from_sequence_parallel_region" data-hash="9c37e07275" data-render="added">
-@@ -0,0 +65,8 @@ _gather_from_sequence_parallel_region
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_gather_from_sequence_parallel_region" data-hash="8687f6a18f" data-render="added">
+@@ -0,0 +72,7 @@ _gather_from_sequence_parallel_region
 +
 +
 +@rule_for(tp_mappings._GatherFromSequenceParallelRegion)
-+def _gather_from_sequence_parallel_region(output, *, input_, group, tensor_parallel_output_grad):
-+    """Type the sequence gather and its selectable gradient collective."""
-+    spmd.assert_type(input_, {group: spmd.S(0)})
-+    output_type = spmd.R if tensor_parallel_output_grad else spmd.I
-+    spmd.assert_local_type_like(output, input_, {group: output_type})
++def _gather_from_sequence_parallel_region(*, input_, group, tensor_parallel_output_grad):
++    """Sequence gather forward; the backward reduce-scatters or splits."""
++    dst = spmd.R if tensor_parallel_output_grad else spmd.I
++    return rules.all_gather(input_, group, src=spmd.S(0), dst=dst)
 </pre>
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_reduce_scatter_to_sequence_parallel_region" data-hash="5bdb323b6b" data-render="added">
-@@ -0,0 +73,7 @@ _reduce_scatter_to_sequence_parallel_region
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_reduce_scatter_to_sequence_parallel_region" data-hash="e1d9137db7" data-render="added">
+@@ -0,0 +79,6 @@ _reduce_scatter_to_sequence_parallel_region
 +
 +
 +@rule_for(tp_mappings._ReduceScatterToSequenceParallelRegion)
-+def _reduce_scatter_to_sequence_parallel_region(output, *, input_, group):
-+    """Type the sequence reduce-scatter and gather backward."""
-+    spmd.assert_type(input_, {group: spmd.V})
-+    spmd.assert_local_type_like(output, input_, {group: spmd.S(0)})
++def _reduce_scatter_to_sequence_parallel_region(*, input_, group):
++    """Sequence reduce-scatter forward, gather backward."""
++    return rules.reduce_scatter(input_, group, src=_summed_type(input_, group), dst=spmd.S(0))
 </pre>
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_all_gather_from_tensor_parallel_region" data-hash="da2926993a" data-render="added">
-@@ -0,0 +80,7 @@ _all_gather_from_tensor_parallel_region
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_all_gather_from_tensor_parallel_region" data-hash="aea35cdebf" data-render="added">
+@@ -0,0 +85,6 @@ _all_gather_from_tensor_parallel_region
 +
 +
 +@rule_for(tp_mappings._AllGatherFromTensorParallelRegion)
-+def _all_gather_from_tensor_parallel_region(output, *, input_, group):
-+    """Type the last-dimension all-gather and reduce-scatter backward."""
-+    spmd.assert_type(input_, {group: spmd.S(-1)})
-+    spmd.assert_local_type_like(output, input_, {group: spmd.R})
++def _all_gather_from_tensor_parallel_region(*, input_, group):
++    """Last-dimension all-gather forward, reduce-scatter backward."""
++    return rules.all_gather(input_, group, src=spmd.S(-1), dst=spmd.R)
 </pre>
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_reduce_scatter_to_tensor_parallel_region" data-hash="ccc8a2fda1" data-render="added">
-@@ -0,0 +87,7 @@ _reduce_scatter_to_tensor_parallel_region
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_reduce_scatter_to_tensor_parallel_region" data-hash="d710b11c2b" data-render="added">
+@@ -0,0 +91,6 @@ _reduce_scatter_to_tensor_parallel_region
 +
 +
 +@rule_for(tp_mappings._ReduceScatterToTensorParallelRegion)
-+def _reduce_scatter_to_tensor_parallel_region(output, *, input_, group):
-+    """Type the last-dimension reduce-scatter and all-gather backward."""
-+    spmd.assert_type(input_, {group: spmd.V})
-+    spmd.assert_local_type_like(output, input_, {group: spmd.S(-1)})
++def _reduce_scatter_to_tensor_parallel_region(*, input_, group):
++    """Last-dimension reduce-scatter forward, all-gather backward."""
++    return rules.reduce_scatter(input_, group, src=_summed_type(input_, group), dst=spmd.S(-1))
 </pre>
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_all_to_all" data-hash="5a49a80c48" data-render="added">
-@@ -0,0 +94,7 @@ _all_to_all
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_all_to_all" data-hash="714039e1d5" data-render="added">
+@@ -0,0 +97,6 @@ _all_to_all
 +
 +
 +@rule_for(tp_mappings._AllToAll)
-+def _all_to_all(output, *, group, input):
-+    """Type the self-adjoint token exchange."""
-+    spmd.assert_type(input, {group: spmd.S(0)})
-+    spmd.assert_local_type_like(output, input, {group: spmd.S(0)})
++def _all_to_all(*, group, input):
++    """Self-adjoint token exchange."""
++    return rules.all_to_all(input, group, src=spmd.S(0), dst=spmd.S(0))
 </pre>
 </div>
 
 <pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="rule_for" data-hash="7325f5fab4" data-render="added" data-context="rule_for">
-@@ -0,0 +18,9 @@ rule_for
+@@ -0,0 +20,9 @@ rule_for
 +def rule_for(function):
 +    """Attach a type rule to an autograd function without changing its behavior."""
 +
@@ -522,28 +527,27 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 +
 +    return decorate
 </pre>
+<p><code>LinearWithFrozenWeight</code> is a standard matmul in FWD, and a dgrad matmul + optional all-reduce in BWD (no wgrad).</p>
+
+<ul>
+<li><code>convert(I -&gt; R)</code> describes the BWD all-reduce</li>
+<li><code>rules.einsum("...k,nk-&gt;...n", input, weight)</code> describes contracting dimension k, and output dimension n</li>
+<li><code>rules.einsum("...n,n-&gt;...n", output, bias)</code> describes a broadcasted op along dim -1</li>
+</ul>
+
 <div class="pair">
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_linear_with_frozen_weight" data-hash="690f57a078" data-render="added">
-@@ -0,0 +101,19 @@ _linear_with_frozen_weight
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_linear_with_frozen_weight" data-hash="7fb85bf932" data-render="added">
+@@ -0,0 +103,10 @@ _linear_with_frozen_weight
 +
 +
 +@rule_for(tp_layers.LinearWithFrozenWeight)
-+def _linear_with_frozen_weight(output, *, input, weight, bias, allreduce_dgrad, tp_group):
-+    """Type the tensor-parallel contract of the completed frozen linear."""
-+    tp_axis = spmd.normalize_axis(tp_group)
-+    spmd.assert_type(weight, {tp_axis: spmd.V})
-+    if bias is not None:
-+        spmd.assert_type(bias, {tp_axis: spmd.V})
++def _linear_with_frozen_weight(*, input, weight, bias, allreduce_dgrad, tp_group):
 +    if allreduce_dgrad:
-+        input_type = spmd.I
-+    elif spmd.get_axis_local_type(input, tp_axis) is spmd.R:
-+        # Sequence parallelism gathers S(0) to R before calling the frozen
-+        # linear. Other no-reduction paths consume V/S inputs.
-+        input_type = spmd.R
-+    else:
-+        input_type = spmd.V
-+    spmd.assert_type(input, {tp_axis: input_type})
-+    spmd.assert_local_type_like(output, input, {tp_axis: spmd.V})
++        input = rules.convert(input, tp_group, src=spmd.I, dst=spmd.R)
++    output = rules.einsum("...k,nk-&gt;...n", input, weight)
++    if bias is not None:
++        output = rules.einsum("...n,n-&gt;...n", output, bias)
++    return output
 </pre>
 <pre class="source" data-file="megatron/core/tensor_parallel/layers.py" data-symbol="LinearWithFrozenWeight" data-members="forward,backward">
 @@ 335
@@ -583,28 +587,26 @@ class LinearWithFrozenWeight(torch.autograd.Function):
 </pre>
 </div>
 
+<p><code>LinearWithGradAccumulationAndAsyncCommunication</code> is somehow the same with an active wgrad op, and supports an input all-gather for sequence parallelism.</p>
+
 <div class="pair">
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_linear_with_grad_accumulation" data-hash="bf90a47aea" data-render="added">
-@@ -0,0 +120,19 @@ _linear_with_grad_accumulation
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_linear_with_grad_accumulation" data-hash="3a3d04aace" data-render="added">
+@@ -0,0 +113,15 @@ _linear_with_grad_accumulation
 +
 +
 +@rule_for(tp_layers.LinearWithGradAccumulationAndAsyncCommunication)
 +def _linear_with_grad_accumulation(
-+    output, *, input, weight, bias, allreduce_dgrad, sequence_parallel, tp_group
++    *, input, weight, bias, allreduce_dgrad, sequence_parallel, tp_group
 +):
-+    """Type the tensor-parallel contract of the completed trainable linear."""
-+    tp_axis = spmd.normalize_axis(tp_group)
-+    spmd.assert_type(weight, {tp_axis: spmd.V})
-+    if bias is not None:
-+        spmd.assert_type(bias, {tp_axis: spmd.V})
++    """Trainable linear, with the sequence-parallel all-gather done inside."""
 +    if allreduce_dgrad:
-+        input_type = spmd.I
++        input = rules.convert(input, tp_group, src=spmd.I, dst=spmd.R)
 +    elif sequence_parallel:
-+        input_type = spmd.S(0)
-+    else:
-+        input_type = spmd.V
-+    spmd.assert_type(input, {tp_axis: input_type})
-+    spmd.assert_local_type_like(output, input, {tp_axis: spmd.V})
++        input = rules.all_gather(input, tp_group, src=spmd.S(0), dst=spmd.R)
++    output = rules.einsum("...k,nk-&gt;...n", input, weight)
++    if bias is not None:
++        output = rules.einsum("...n,n-&gt;...n", output, bias)
++    return output
 </pre>
 <pre class="source" data-file="megatron/core/tensor_parallel/layers.py" data-symbol="LinearWithGradAccumulationAndAsyncCommunication" data-members="forward,backward">
 @@ 441
@@ -811,19 +813,21 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
 </pre>
 </div>
 
+<p>MoE (router load-balancing) and MTP (token prediction) auxiliary losses use these autograd.Fns to inject the losses into the main autograd graph and scale its gradient contribution; they are identities in FWD and local ops in BWD (just scaling, no semantics change).<br><br>We'd register this as a local autograd.Fn, but the (V output, I aux_loss) inputs don't mix in local SPMD rules, so we use <code>rules.output()</code> to say the output takes the activation's type, and the aux loss is ignored.</p>
+
 <div class="pair">
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_moe_aux_loss_autoscaler" data-hash="8d69b0d00f" data-render="added">
-@@ -0,0 +139,10 @@ _moe_aux_loss_autoscaler
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_moe_aux_loss_autoscaler" data-hash="4015e1f479" data-render="added">
+@@ -0,0 +128,10 @@ _moe_aux_loss_autoscaler
 +
 +
 +@rule_for(moe_utils.MoEAuxLossAutoScaler)
-+def _moe_aux_loss_autoscaler(result, *, output):
++def _moe_aux_loss_autoscaler(out, *, output):
 +    """The forward is the identity on ``output``.
 +
 +    ``aux_loss`` only contributes a gradient in backward, so it must not
 +    influence the result's type; the generic local rule would let it.
 +    """
-+    spmd.assert_type_like(result, output)
++    rules.output(out, output)
 </pre>
 <pre class="source" data-file="megatron/core/transformer/moe/moe_utils.py" data-symbol="MoEAuxLossAutoScaler" data-members="forward,backward">
 @@ 248
@@ -868,62 +872,11 @@ class MoEAuxLossAutoScaler(torch.autograd.Function):
 </pre>
 </div>
 
-<div class="pair">
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_mtp_loss_autoscaler" data-hash="09c4d031f1" data-render="added">
-@@ -0,0 +149,10 @@ _mtp_loss_autoscaler
-+
-+
-+@rule_for(mtp.MTPLossAutoScaler)
-+def _mtp_loss_autoscaler(result, *, output):
-+    """The forward is the identity on ``output``.
-+
-+    ``mtp_loss`` only contributes a gradient in backward, so it must not
-+    influence the result's type; the generic local rule would let it.
-+    """
-+    spmd.assert_type_like(result, output)
-</pre>
-<pre class="source" data-file="megatron/core/transformer/multi_token_prediction.py" data-symbol="MTPLossAutoScaler" data-members="forward,backward">
-@@ 566
-class MTPLossAutoScaler(torch.autograd.Function):
-    """An AutoScaler that triggers the backward pass and scales the grad for mtp loss."""
-
-    main_loss_backward_scale: torch.Tensor = torch.tensor(1.0)
-
-    @staticmethod
-    def forward(ctx, output: torch.Tensor, mtp_loss: torch.Tensor):
-        """Preserve the mtp by storing it in the context to avoid garbage collection.
-
-        Args:
-            output (torch.Tensor): The output tensor.
-            mtp_loss (torch.Tensor): The mtp loss tensor.
-
-        Returns:
-            torch.Tensor: The output tensor.
-        """
-        ctx.save_for_backward(mtp_loss)
-        return output
-
-    @staticmethod
-    def backward(ctx, grad_output: torch.Tensor):
-        """Compute and scale the gradient for mtp loss..
-
-        Args:
-            grad_output (torch.Tensor): The gradient of the output.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: The gradient of the output, scaled mtp loss
-                                               gradient.
-        """
-        (mtp_loss,) = ctx.saved_tensors
-        mtp_loss_backward_scale = MTPLossAutoScaler.main_loss_backward_scale
-        scaled_mtp_loss_grad = torch.ones_like(mtp_loss) * mtp_loss_backward_scale
-        return grad_output, scaled_mtp_loss_grad
-</pre>
-</div>
+<p>EP dispatch sends a varying count of tokens to each EP rank based on router outputs. This isn't well-represented by <code>S(0)</code> (sharding is jagged, and not a sharded view of the "global" compute), so the EP region is best annotated as <code>spmd.V</code>.</p>
 
 <div class="pair">
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_hybrid_ep_dispatch" data-hash="b134a361d4" data-render="added">
-@@ -0,0 +159,16 @@ _hybrid_ep_dispatch
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_hybrid_ep_dispatch" data-hash="b3cfe0287d" data-render="added">
+@@ -0,0 +148,18 @@ _hybrid_ep_dispatch
 +
 +
 +@rule_for(fused_a2a.HybridEPDispatch)
@@ -937,8 +890,10 @@ class MTPLossAutoScaler(torch.autograd.Function):
 +    dispatched_hidden, dispatched_probs, _, tokens_per_expert, handle = outputs
 +    group_axis = spmd.MeshAxis.of(group)
 +    varying = {axis: spmd.V for axis in spmd.current_mesh() if axis &lt;= group_axis}
-+    # The handle's last entry is this rank's overflow flag, which the dispatcher reads.
-+    for tensor in (dispatched_hidden, dispatched_probs, tokens_per_expert, handle[-1]):
++    # The dispatcher reads the handle's overflow flag and combine reads its token
++    # bookkeeping; the real and fake handles differ, so type every tensor in it.
++    handle_tensors = [t for t in handle if isinstance(t, torch.Tensor)]
++    for tensor in (dispatched_hidden, dispatched_probs, tokens_per_expert, *handle_tensors):
 +        spmd.assert_local_type_like(tensor, x, varying)
 </pre>
 <pre class="source" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch" data-members="forward,backward">
@@ -1079,15 +1034,17 @@ class HybridEPDispatch(torch.autograd.Function):
 </pre>
 </div>
 
+<p>EP combine all-to-all sends expert token outputs back to their owning ranks. The collective keeps the output V on the sparse mesh, so we carry over the type.</p>
+
 <div class="pair">
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_hybrid_ep_combine" data-hash="e50a4fb09d" data-render="added">
-@@ -0,0 +175,6 @@ _hybrid_ep_combine
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_hybrid_ep_combine" data-hash="e1aa68925d" data-render="added">
+@@ -0,0 +166,6 @@ _hybrid_ep_combine
 +
 +
 +@rule_for(fused_a2a.HybridEPCombine)
-+def _hybrid_ep_combine(output, *, x):
++def _hybrid_ep_combine(out, *, x):
 +    """Tokens return to their owners; the axes they crossed already vary in ``x``."""
-+    spmd.assert_local_type_like(output, x)
++    rules.output(out, x)
 </pre>
 <pre class="source" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPCombine" data-members="forward,backward">
 @@ 523
@@ -1140,8 +1097,10 @@ class HybridEPCombine(torch.autograd.Function):
 </pre>
 </div>
 
+<p>Transformer Engine's Linear autograd.Fns merge collectives into the TP linears (e.g. AG -&gt; colwise -&gt; rowwise -&gt; RS). This makes the generic helper account for the input collective (colwise: if sequence-parallel, if BWD all-reduce is required), the matmul itself, and the output collective (rowwise: reduce-scatter vs. all-reduce on partial output).</p>
+
 <pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_named_non_tensor_args" data-hash="11fbf9f10a" data-render="added">
-@@ -0,0 +181,11 @@ _named_non_tensor_args
+@@ -0,0 +172,11 @@ _named_non_tensor_args
 +
 +
 +def _named_non_tensor_args(unpacker, values):
@@ -1154,42 +1113,51 @@ class HybridEPCombine(torch.autograd.Function):
 +        )
 +    return dict(zip(names, values))
 </pre>
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_assert_te_linear_types" data-hash="07cd28ea08" data-render="added">
-@@ -0,0 +192,19 @@ _assert_te_linear_types
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_te_linear_input" data-hash="3a241378e9" data-render="added">
+@@ -0,0 +183,10 @@ _te_linear_input
 +
 +
-+def _assert_te_linear_types(out, inp, options):
-+    """State the TP contract shared by Transformer Engine linear functions."""
++def _te_linear_input(inp, options):
++    """The GEMM input after TE's input-side collective."""
++    tp_group = options["tp_group"]
++    if options["parallel_mode"] == "column":
++        if options["sequence_parallel"]:
++            return rules.all_gather(inp, tp_group, src=spmd.S(0), dst=spmd.R)
++        return rules.convert(inp, tp_group, src=spmd.I, dst=spmd.R)
++    return inp
+</pre>
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_te_linear_output" data-hash="977bd6481e" data-render="added">
+@@ -0,0 +193,16 @@ _te_linear_output
++
++
++def _te_linear_output(inp, weight, options):
++    """TE's GEMM and output-side collective, given the GEMM input."""
 +    tp_group = options["tp_group"]
 +    parallel_mode = options["parallel_mode"]
-+    if parallel_mode is None:
++    if parallel_mode not in ("column", "row", None):
 +        # Megatron passes None when it performs TP communication itself.
-+        spmd.assert_local_type_like(out, inp)
-+    elif parallel_mode == "column":
-+        input_type = spmd.S(0) if options["sequence_parallel"] else spmd.I
-+        spmd.assert_type(inp, {tp_group: input_type})
-+        spmd.assert_local_type_like(out, inp, {tp_group: spmd.S(-1)})
-+    elif parallel_mode == "row":
-+        output_type = spmd.S(0) if options["sequence_parallel"] else spmd.I
-+        spmd.assert_type(inp, {tp_group: spmd.S(-1)})
-+        spmd.assert_local_type_like(out, inp, {tp_group: output_type})
-+    else:
 +        raise NotImplementedError(f"Unsupported Transformer Engine linear mode {parallel_mode!r}")
++    out = rules.einsum("...k,nk-&gt;...n", inp, weight)
++    if parallel_mode == "row":
++        src = _summed_type(out, tp_group)
++        if options["sequence_parallel"]:
++            return rules.reduce_scatter(out, tp_group, src=src, dst=spmd.S(0))
++        return rules.all_reduce(out, tp_group, src=src, dst=spmd.I)
++    return out
 </pre>
+
 <div class="pair">
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_te_linear" data-hash="9d00b0a278" data-render="added">
-@@ -0,0 +214,11 @@ _te_linear
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_te_linear" data-hash="a37d4c84c8" data-render="added">
+@@ -0,0 +212,9 @@ _te_linear
 +
 +
 +@rule_for(getattr(_te_extension, "_Linear", None))
-+def _te_linear(output, *, weight, inp, non_tensor_args):
++def _te_linear(*, weight, inp, non_tensor_args):
++    """Returns ``(out, weight_workspace)``; the workspace is ``weight`` recast."""
 +    from transformer_engine.pytorch.module import linear as te_linear
 +
-+    out, weight_workspace = output
 +    options = _named_non_tensor_args(te_linear._linear_forward_impl, non_tensor_args)
-+    _assert_te_linear_types(out, inp, options)
-+    if weight_workspace is not None:
-+        spmd.assert_local_type_like(weight_workspace, weight)
++    return _te_linear_output(_te_linear_input(inp, options), weight, options), weight
 </pre>
 <pre class="source" data-file="transformer_engine/pytorch/module/linear.py" data-symbol="_Linear" data-members="forward,backward" data-repo="NVIDIA/TransformerEngine" data-rev="42b840051647eef89761a16dfdff87e82bb253ab">
 @@ 1075
@@ -1276,25 +1244,26 @@ class _Linear(torch.autograd.Function):
 </pre>
 </div>
 
+<p>TE's <code>_LayerNormLinear</code> fuses a LayerNorm in front of the same linear, so we prepend <code>rules.einsum("..._,_-&gt;..._", inp, ln_weight)</code> as LayerNorm requires the full hidden dimension.</p>
+
 <div class="pair">
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_te_layernorm_linear" data-hash="0b931a1a10" data-render="added">
-@@ -0,0 +225,16 @@ _te_layernorm_linear
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_te_layernorm_linear" data-hash="6f7f78e029" data-render="added">
+@@ -0,0 +221,15 @@ _te_layernorm_linear
 +
 +
 +@rule_for(getattr(_te_extension, "_LayerNormLinear", None))
-+def _te_layernorm_linear(output, *, inp, weight, non_tensor_args):
++def _te_layernorm_linear(*, inp, ln_weight, weight, non_tensor_args):
++    """Returns ``(out, ln_out, weight_workspace)``."""
 +    from transformer_engine.pytorch.module.layernorm_linear import _LayerNormLinear
 +
-+    out, ln_out, weight_workspace = output
 +    options = _named_non_tensor_args(_LayerNormLinear.forward, non_tensor_args)
-+    _assert_te_linear_types(out, inp, options)
-+    if ln_out is not None:
-+        if options["return_layernorm_output_gathered"]:
-+            spmd.assert_local_type_like(ln_out, inp, {options["tp_group"]: spmd.R})
-+        else:
-+            spmd.assert_local_type_like(ln_out, inp)
-+    if weight_workspace is not None:
-+        spmd.assert_local_type_like(weight_workspace, weight)
++    # LayerNorm reads the whole hidden dim, per token.
++    ln_out = rules.einsum("..._,_-&gt;..._", inp, ln_weight)
++    gemm_input = _te_linear_input(ln_out, options)
++    out = _te_linear_output(gemm_input, weight, options)
++    if options["return_layernorm_output_gathered"]:
++        ln_out = gemm_input
++    return out, ln_out, weight
 </pre>
 <pre class="source" data-file="transformer_engine/pytorch/module/layernorm_linear.py" data-symbol="_LayerNormLinear" data-members="forward,backward" data-repo="NVIDIA/TransformerEngine" data-rev="42b840051647eef89761a16dfdff87e82bb253ab">
 @@ 86
@@ -2301,21 +2270,28 @@ class _LayerNormLinear(torch.autograd.Function):
 </pre>
 </div>
 
+<p>Vocab-parallel cross-entropy takes logits sharded on the vocab dim (<code>S(-1)</code>) with invariant labels (I), and computes the output loss (I) in a distributed fashion.</p>
+
+<p>From the typechecker's perspective, this follows the same input/output rules as all-gathering the logits, and using them in an op that requires the full vocab dim and returns a scalar (<code>reduce_loss</code>) or contracts the dim away.</p>
+
+
 <div class="pair">
-<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_te_parallel_cross_entropy" data-hash="6a4c8eb75d" data-render="added">
-@@ -0,0 +241,12 @@ _te_parallel_cross_entropy
+<pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_te_parallel_cross_entropy" data-hash="77561235ed" data-render="added">
+@@ -0,0 +236,14 @@ _te_parallel_cross_entropy
 +
 +
 +@rule_for(getattr(_te_extension, "CrossEntropyFunction", None))
-+def _te_parallel_cross_entropy(output, *, inp, target, dist_process_group):
-+    if dist_process_group is None:
-+        # No collective: logits, targets, and loss vary together.
-+        spmd.assert_local_type_like(inp, target)
-+        spmd.assert_local_type_like(output, target)
-+        return
-+    spmd.assert_type(inp, {dist_process_group: spmd.S(-1)})
-+    spmd.assert_type(target, {dist_process_group: spmd.I})
-+    spmd.assert_local_type_like(output, target)
++def _te_parallel_cross_entropy(*, inp, target, reduce_loss, dist_process_group):
++    """Cross-entropy, vocab-parallel over ``dist_process_group`` when it is set.
++
++    The kernel all-gathers the softmax statistics, and each rank's logit
++    gradient covers only its own vocab slice, which is the all-gather to ``I``.
++    """
++    if dist_process_group is not None:
++        inp = rules.all_gather(inp, dist_process_group, src=spmd.S(-1), dst=spmd.I)
++    if reduce_loss:
++        return rules.einsum(f"{'_' * inp.ndim},{'_' * target.ndim}-&gt;", inp, target)
++    return rules.einsum("..._,...-&gt;...", inp, target)
 </pre>
 <pre class="source" data-file="transformer_engine/pytorch/cross_entropy.py" data-symbol="CrossEntropyFunction" data-members="forward,backward" data-repo="NVIDIA/TransformerEngine" data-rev="42b840051647eef89761a16dfdff87e82bb253ab">
 @@ 19
@@ -2396,7 +2372,7 @@ class CrossEntropyFunction(torch.autograd.Function):
 
 <section id="two-meshes">
 <h2>Expert parallelism</h2>
-<p>For EP, Megatron uses what it calls <a href="https://arxiv.org/abs/2504.14960">MoE parallel folding</a>: EP ranks are a subset of (TP x CP x DP) ranks, and it's simpler to view EP vs. DP x CP x TP as part of different meshes (different views of the same GPU ranks). The dense (TP x CP x DP) mesh is for attention and other non-expert-FFN compute, and the expert/sparse (ETP x EP x EDP) mesh for the MoE region.</p>
+<p>For EP, Megatron uses what it calls <a href="https://arxiv.org/html/2504.14960v3">"MoE parallel folding"</a>, which just means EP ranks are a subset of the (TP x CP x DP) GPU ranks, and not an orthogonal mesh axis (FWIW, <a href="https://github.com/pytorch/torchtitan/blob/d6810e4d6d66bd605daee63f797fc488306a0e94/torchtitan/distributed/parallelism_context.py#L259-L276">torchtitan also does this</a>).<br><br>It's then simpler to view EP vs. DP/CP/TP as on different device meshes, and not all on the same mesh, with the (TP x CP x DP) default dense mesh used for attention and other non-MoE-FFN compute, and the (ETP x EP x EDP) sparse or expert mesh for the MoE region.</p>
 
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="expert_parallel_mesh" data-hash="98a1cb529f" data-render="added">
 @@ -0,0 +102,16 @@ expert_parallel_mesh
@@ -2418,9 +2394,11 @@ class CrossEntropyFunction(torch.autograd.Function):
 +    }
 </pre>
 
-<p><code>spmd_types</code> supports cross-mesh transitions: the mesh-axes in annotations are switched onto the new mesh, and the before/after types are verified to be compatible (if say, TP == ETP, a tensor is sharded on TP but not on ETP, <code>spmd_types</code> will raise, you must all-gather first).</p>
+<p><code>spmd_types</code> allows you to flexibly transition across meshes by re-annotating your tensors, or changing the active ambient mesh - the typechecker will check compatibility between your pre- &amp; post-transition types (say, if an axis is shared across both meshes, but sharded on one but not the other, you must redistribute or fix the annotation).</p>
 
-<p>Sparse/dense mesh transition happens at the dispatch/combine all2alls; routing is done on dense mesh, and the token sends to EP ranks transitions to sparse mesh. The <code>expert_parallel_region</code> / <code>leave_expert_parallel_region</code> runtime contexts tell the typechecker which mesh is currently active, but add no runtime overhead.</p>
+
+
+<p>MoE compute goes router -&gt; dispatch -&gt; FFN -&gt; combine, and sparse-dense mesh transition happens at the dispatch/combine all-to-alls; only expert FFN compute is on the sparse mesh. For Megatron we add <code>expert_parallel_region</code> to set the ambient sparse mesh, and <code>leave_expert_parallel_region</code> to transition back to dense; both have negligible-to-no runtime overhead.</p>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="expert_parallel_region" data-hash="b73784590f" data-render="added">
 @@ -0,0 +146,11 @@ expert_parallel_region
 +
@@ -2485,9 +2463,7 @@ class CrossEntropyFunction(torch.autograd.Function):
          output = self.token_dispatcher.combine_preprocess(expert_output)
  
 </pre>
-<p>
-     EP parameter annotations are pretty standard, just on the sparse mesh instead of dense:
-</p>
+<p>EP parameter annotations are also required, inferred off of parameter attributes, just on the sparse mesh instead of dense:</p>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_is_expert_parallel_parameter" data-hash="451fffc44a" data-render="added">
 @@ -0,0 +118,12 @@ _is_expert_parallel_parameter
 +
@@ -2558,43 +2534,12 @@ class CrossEntropyFunction(torch.autograd.Function):
 +    if over_budget is not None:
 +        spmd.assert_type(over_budget, {"TP": spmd.V, "DP": spmd.V, "CP": spmd.V})
 </pre>
-<h3>Other no_typecheck uses</h3>
-<pre class="hunk" data-file="megatron/core/transformer/moe/experts.py" data-symbol="TEGroupedMLP._fused_forward" data-hash="c35676443a">
-@@ -979,7 +980,11 @@ TEGroupedMLP._fused_forward
-         # Note: The fused impl is stored in a tuple to avoid
-         # registering submodules.
-         if self._fused_ops is None:
--            self._fused_ops = (self._make_fused_ops(),)
-+            # Building the fused module is setup, not computation: it allocates
-+            # placeholder weights that are immediately replaced by this module's own
-+            # parameters, so it is excluded from SPMD type checking.
-+            with spmd.no_typecheck():
-+                self._fused_ops = (self._make_fused_ops(),)
-         (ops,) = self._fused_ops
- 
-         # Apply padding if needed
-</pre>
-<pre class="hunk" data-file="megatron/core/tensor_parallel/random.py" data-symbol="CudaRNGStatesTracker.fork" data-hash="7bb7f004e7">
-@@ -315,8 +316,11 @@ CudaRNGStatesTracker.fork
-         try:
-             yield
-         finally:
--            # Throw a warning if cpu RNG state changed
--            if not torch.all(cpu_rng_state == torch.get_rng_state()).item():
-+            # Throw a warning if cpu RNG state changed. Comparing host RNG state is
-+            # bookkeeping rather than model computation, so it is not type-checked.
-+            with spmd.no_typecheck():
-+                cpu_rng_state_changed = not torch.all(cpu_rng_state == torch.get_rng_state()).item()
-+            if cpu_rng_state_changed:
-                 logging.getLogger(__name__).warning('CPU RNG state changed within GPU RNG context')
-             # Check if the current state name is the same as the desired state name.
-             if self._current_state_name != name:
-</pre>
 </section>
 
 <section id="fake-process-group">
 <h2>Fake ProcessGroup setup &amp; compatibility</h2>
-<p><code>_fake_distributed</code> starts a single rank with PyTorch's fake backend and a <code>FakeStore</code>, then initializes Megatron's parallel state for the requested topology. Unlike NCCL, fake collectives don't do any comms, reduction, or data movement, just returning placeholder outputs that let the checker propagate &amp; check <code>spmd_types</code>, without being numerically accurate.</p>
+<p>PyTorch's fake ProcessGroup backend lets you simulate multi-GPU, nD parallel distributed runs on a single-GPU, by replacing c10d's standard PG comms with stubs, e.g. all-reduce is a no-op, all-gather repeats the input tensor N times, reduce-scatter just takes the rank's shard without reduction (see <a href="https://github.com/pytorch/pytorch/blob/5decc7eadefc3b7c8f395e8c01b4d2caf12e7a77/torch/csrc/distributed/c10d/FakeProcessGroup.hpp#L183-L188"><code>FakeProcessGroup.hpp</code></a>). This is obviously numerically wrong, but similar, and it lets you approximate things like memory usage, compute kernel runtime, and in <code>spmd_types</code>' case check for distributed correctness, as the typechecker depends on op semantics and collective output annotations.*<br><br>*though data-dependent control flow could make the runtime path diverge!</p>
+
 <pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="_fake_distributed" data-hash="1c1edca18a" data-render="added">
 @@ -0,0 +204,23 @@ _fake_distributed
 +
@@ -2622,7 +2567,8 @@ class CrossEntropyFunction(torch.autograd.Function):
 +        torch.distributed.destroy_process_group()
 </pre>
 
-<p>The HybridEP backend uses dispatch kernels that aren’t compatible with fake ProcessGroup, so we mock a <code>_fake_dispatch</code> method that simulates it, repeating input tokens to the requested shape, stubbing the actual comms. Like the rest of fake PG, this is enough to simulate distributed behavior (and typechecking correctness), but not for numerical correctness.</p>
+<p>The DSv3 setup we're running utilizes HybridEP for EP comms, which replaces your standard all-to-alls with more specialized comm kernels. Because these aren't standard PG methods, fake backend won't stub them out, but it does mean when HybridEP calls to <a href="https://github.com/deepseek-ai/DeepEP/blob/10d4dd7377d5bce900fbb4b80cce863764892b95/csrc/hybrid_ep/backend/hybrid_ep_backend.cuh#L4266-L4295"><code>device_sync_kernel</code></a> as a barrier for dispatch/combine, it'll hang waiting for the other non-EP ranks to signify readiness.<br><br>One way to avoid this is to mock fake dispatch/combine methods, where in the spirit of fake PG, we just copy over token rows from the src tensor until it's the right shape:</p>
+
 <pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_is_fake_process_group" data-hash="849b6f7202" data-render="added">
 @@ -350,3 +352,6 @@ reset_hybrid_ep_buffer
      _hybrid_ep_buffer = None
@@ -2735,28 +2681,8 @@ class CrossEntropyFunction(torch.autograd.Function):
 <section id="tying-it-together">
 <h2>Tying it all together</h2>
 <h3>Checking a DeepSeek-V3 256-GPU job on 1 GPU</h3>
-<p>The end-to-end target is the MLPerf Training v6.0 NVIDIA GB200 DeepSeek-V3
-recipe: a 61-layer MLA transformer with one MTP layer, 256 experts with top-8
-routing, HybridEP dispatch, and FP8 Transformer Engine kernels. Its 256 GPUs use
-TP=2, PP=4, VP=4, CP=1, EP=32, and ETP=1. Excluding pipeline parallelism, each
-64-rank pipeline stage has equivalent dense TP × CP × DP = 2 × 1 × 32 and sparse
-ETP × EP × EDP = 1 × 32 × 2 mesh views.</p>
-<p>The test config mirrors the production recipe, except that recomputation and
-schedule-driven overlap features are disabled: a one-process fake-PG run does
-not need recomputation for memory, and it invokes model chunks directly rather
-than through the pipeline scheduler.</p>
-<p>The <code>typecheck()</code> context lazily imports Megatron's
-<a href="#megatron/core/spmd/spmd_rules.py::rule_for">sidecar rules</a>
-before activating the generic SPMD checker.</p>
-<p>Verified on 2026-09-23 on an NVIDIA GB300 (compute capability 10.3): both the
-<a href="#tests/unit_tests/spmd/test_checker.py::test_mlperf_deepseek_v3_te_config_typechecks">MoE/MTP/output chunk</a>
-and the
-<a href="#tests/unit_tests/spmd/test_checker.py::test_mlperf_deepseek_v3_dense_embedding_chunk_typechecks">embedding/early-transformer chunk</a>
-passed with <code>typecheck()</code> and real CUDA/Transformer Engine kernels.
-This validates annotation and propagation behavior, not real multi-GPU DeepEP
-communication.
-Environment: PyTorch 2.14.0+cu130 (CUDA 13.0), Transformer Engine
-2.15.0+42b84005, DeepEP 1.2.1+58397ea.</p>
+<p>The end-to-end target is the DeepSeek-V3 Megatron used for MLPerf Training v6.0 on GB200. The model is 671B params, 61 layers, 256 experts with top-8 routing, using HybridEP and FP8 Transformer Engine GEMMs. The parallelism setup is 2-way TP, 4-way PP, and 32-way EP, with leftover 32-way DP (no FSDP) and 2-way EDP.<br><br>The test config mirrors the production recipe, except that AC is disabled because we haven't completely handled Megatron's AC machinery, but in theory typechecking a no-AC config should ensure correctness with AC; recomputing the FWD shouldn't change distributed FWD-BWD semantics.</p>
+<p>The <code>typecheck()</code> context lazily imports and registers the rules from <code>spmd_rules.py</code>, before activating the typechecker:</p>
 <pre class="hunk" data-file="megatron/core/spmd/checker.py" data-symbol="typecheck" data-hash="6094006fc3" data-render="added">
 @@ -0,0 +13,17 @@ typecheck
 +
@@ -2777,8 +2703,7 @@ Environment: PyTorch 2.14.0+cu130 (CUDA 13.0), Transformer Engine
 +    ):
 +        yield
 </pre>
-<h3>Annotating the model</h3>
-<p><code>annotate_model</code> is the entry point that applies the annotations we've built for all params &amp; model-parallel mesh axes: dense and expert parameters, buffers, non-trainable params &amp; other state involved in FWD-BWD compute (data-parallel axes are handled by the DDP wrapper). Call it inside <code>typecheck()</code> before the FWD pass.</p>
+<p><code>annotate_model</code> is the entry point that supplies the annotations we've built for all params and applicable tensors:</p>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="annotate_model" data-hash="c568c6eba7" data-render="added">
 @@ -0,0 +193,34 @@ annotate_model
 +
@@ -2959,6 +2884,39 @@ loss-parallel cross entropy, and backward.</li>
 
 
 
+
+<h3>Other no_typecheck uses</h3>
+<pre class="hunk" data-file="megatron/core/transformer/moe/experts.py" data-symbol="TEGroupedMLP._fused_forward" data-hash="c35676443a">
+@@ -979,7 +980,11 @@ TEGroupedMLP._fused_forward
+         # Note: The fused impl is stored in a tuple to avoid
+         # registering submodules.
+         if self._fused_ops is None:
+-            self._fused_ops = (self._make_fused_ops(),)
++            # Building the fused module is setup, not computation: it allocates
++            # placeholder weights that are immediately replaced by this module's own
++            # parameters, so it is excluded from SPMD type checking.
++            with spmd.no_typecheck():
++                self._fused_ops = (self._make_fused_ops(),)
+         (ops,) = self._fused_ops
+ 
+         # Apply padding if needed
+</pre>
+<pre class="hunk" data-file="megatron/core/tensor_parallel/random.py" data-symbol="CudaRNGStatesTracker.fork" data-hash="7bb7f004e7">
+@@ -315,8 +316,11 @@ CudaRNGStatesTracker.fork
+         try:
+             yield
+         finally:
+-            # Throw a warning if cpu RNG state changed
+-            if not torch.all(cpu_rng_state == torch.get_rng_state()).item():
++            # Throw a warning if cpu RNG state changed. Comparing host RNG state is
++            # bookkeeping rather than model computation, so it is not type-checked.
++            with spmd.no_typecheck():
++                cpu_rng_state_changed = not torch.all(cpu_rng_state == torch.get_rng_state()).item()
++            if cpu_rng_state_changed:
+                 logging.getLogger(__name__).warning('CPU RNG state changed within GPU RNG context')
+             # Check if the current state name is the same as the desired state name.
+             if self._current_state_name != name:
+</pre>
 
 <h3>Other SPMD test cases</h3>
 <p>The focused tests separately cover native TP collective contracts, expert

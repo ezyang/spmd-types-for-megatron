@@ -347,8 +347,8 @@
   // scrolls inside the height of the left box, or of the reference rule box
   // (_linear_with_frozen_weight) when the left one is shorter.
   var PAIR_REF = 'megatron/core/spmd/spmd_rules.py::_linear_with_frozen_weight';
-  var PAIR_MAX = 1200;
-  var PAIR_LEFT = 0.68;
+  var PAIR_MAX = 1400;
+  var PAIR_LEFT = 0.6;
 
   function layoutPairs() {
     var pairs = document.querySelectorAll('.pair');

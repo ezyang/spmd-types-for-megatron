@@ -21,13 +21,11 @@ It helps solve two specific problems that commonly arise when writing distribute
 </p>
 
 <ol>
-<li>
-When using differentiable collectives (e.g., as popularized by Megatron-style tensor
+<li>When using differentiable collectives (e.g., as popularized by Megatron-style tensor
 parallelism), forgetting to insert an appropriate backward collective (no-op in forwards)
 will result in silently incorrect gradients.  <code>spmd_types</code> keeps track of
 whether or backward gradients have pending reductions, allowing us to verify correct
-use of collectives.  This is <strong>local SPMD</strong> typechecking.
-</li>
+use of collectives.  This is <strong>local SPMD</strong> typechecking.</li>
 
 <li>
 When writing distributed code, some functions have the same semantics no
@@ -56,16 +54,13 @@ to any Megatron-style codebase.)  The general recipe is:</p>
 <ol>
 <li>Make your codebase support fake process group, if it doesn't already.  This allows
 you to run your full-size model code on a single GPU, which is good for testing
-and memory analysis. (Megatron already supports this, so it is omitted in this post.)</li>
-<li>For each custom autograd function in your codebase, either decorate it with <code>register_local_autograd_function</code> (if it's a purely local autograd function and you only care about local SPMD typechecking) or add a static method <code>spmd_typecheck</code> describing its typing rule (if it's a distributed collective, or it's local but you want to do global SPMD typechecking). These registrations can live in a separate module that the SPMD typechecking tests load, keeping typechecking hooks out of model code.</li>
-<li>Write separate rules for annotating model inputs, parameters, and boundaries with appropriate types. This requires knowing a little bit about how distributed wrappers (e.g., FSDP) work. Megatron keeps these annotations in <code>megatron.core.spmd.annotations</code>; its custom FSDP/DDP wrappers state their own replication promises.</li>
+and memory analysis. Megatron already supports this, so we just show what's needed for DSv3 compatibility.</li>
+<li>For each custom autograd function in your codebase, either decorate it with <code>register_local_autograd_function</code> (if it's a purely local autograd function and you only care about local SPMD typechecking) or add a static method <code>spmd_typecheck</code> describing its typing rule (if it's a distributed collective, or it's local but you want to do global SPMD typechecking). The registrations can live in a separate module imported at typecheck time, keeping them out of model code.</li>
+<li>Write separate rules for annotating model inputs, parameters, and boundaries with appropriate types. This requires knowing a little bit about how distributed wrappers (e.g., FSDP) work. If you use stock PyTorch FSDP2 on PyTorch 2.14.0 or later, this is automatically handled for you.  Megatron has a custom FSDP implementation, so in this post we'll show how it was adjusted to handle this.</li>
 <li>Write a unit test (with fake PG) which runs your model code with typechecking enabled.</li>
 </ol>
 
-<p>You can import <code>spmd_types as spmd</code> in each file that needs it, and
-keep each autograd function's registration or <code>spmd_typecheck</code> rule
-alongside its implementation, or, if you prefer keeping typechecking separate from compute definitions,
-you can maintain a separate rules registry module, only imported when typechecking tests run.</p>
+<p></p>
 
 <p>This patch specifically addresses the subset of changes needed to run DeepSeek-V3
 in the recommended configuration as published by Megatron-Bridge.</p>

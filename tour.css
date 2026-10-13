@@ -81,3 +81,8 @@ pre.source { display: none; }
 .tour.source .tour-head { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .scroll-box > .tour.scrolling { overflow: auto; position: relative; }
 .tour.scrolling .tour-head { position: sticky; top: 0; z-index: 1; }
+math { font-family: Georgia, serif; }
+math mi { text-transform: none; font-style: italic; }
+math[display="block"] { margin: 0.6em 0; font-size: 1.1em; }
+math .term { border-bottom: 1px solid #999; padding: 0 2px 3px; }
+math .term-label { font-size: 0.75em; color: #555; padding-top: 2px; }

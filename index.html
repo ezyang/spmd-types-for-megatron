@@ -479,9 +479,15 @@ TODO: switch DSv3 to global spmd types
 
 <p>These are op-invariant, standard rules like:</p>
 <ul>
-<li>Compute on <code>I</code> (<code>Invariant</code>: the FWD value and BWD gradient are identical across ranks) gives <code>I</code>, compute on <code>R</code> (<code>Replicate</code>: identical FWD values, but gradients pend reduction) gives <code>R</code>. Pretty standard, ranks computing on same inputs produce the same outputs.</li>
-<li><code>R</code> combined with <code>V</code> (<code>Varying</code>: both FWD &amp; BWD values can vary, e.g. sharded / different data / different local BS) gives <code>V</code>. Makes sense - 1 input differs across ranks, the output differs too. <code>I</code> doesn't mix with <code>V</code> (or any other type); <code>R</code> is allowed because the [<code>R</code> FWD &lt;-&gt; <code>P</code> BWD] duality is a reminder that the gradient pends reduction, aggregating contributions from varying compute. The common case is data parallelism (same params, different data) - the gradient all-reduce computes a singular value for the global batch.</li>
-<li><code>P</code> (<code>Partial</code>: FWD pending reduction, identical incoming gradients) propagation depends on the class of op. This is useful for things like delaying or coalescing all-reduces, but also reminds you when an all-reduce is needed (e.g. after colwise/rowwise TP FFN, before adding back to residual stream).</li>
+<li><code>op(I) -&gt; I</code>: <code>I</code> (<code>Invariant</code>) means the FWD value and BWD gradient are identical across ranks. Ranks computing on the same inputs produce the same outputs, and nothing needs reducing in BWD.</li>
+<li><code>op(R) -&gt; R</code>: <code>R</code> (<code>Replicate</code>) means identical FWD values, but gradients pend reduction. Same inputs, same outputs.</li>
+<li><code>op(V) -&gt; V</code>: <code>V</code> (<code>Varying</code>) means both FWD &amp; BWD values can vary, e.g. sharded / different data / different local BS.</li>
+<li><code>op(R, V) -&gt; V</code>: if one input differs across ranks, the output differs too. <code>R</code> is allowed to mix with <code>V</code> because the [<code>R</code> FWD &lt;-&gt; <code>P</code> BWD] duality is a reminder that the gradient pends reduction, aggregating contributions from varying compute. The common case is data parallelism (same params, different data) - the gradient all-reduce computes a singular value for the global batch.</li>
+<li><code>op(I, R)</code>, <code>op(I, V)</code>, <code>op(I, P)</code>: error. <code>I</code> doesn't mix with any other type; convert it to <code>R</code> first. For tensors that can't receive a gradient, <code>R</code> and <code>I</code> are interchangeable.</li>
+<li><code>linear_op(P) -&gt; P</code>, e.g. <code>P + P -&gt; P</code>: a sum of partial sums is still a partial sum. This is what lets you delay or coalesce all-reduces.</li>
+<li><code>P * R -&gt; P</code>, also for scaling by a Python scalar: scaling one factor of a pending sum keeps it pending. Only one factor may be <code>P</code>.</li>
+<li><code>P + R</code>, <code>P + scalar</code>: error. The non-partial term would get summed once per rank.</li>
+<li><code>nonlinear_op(P)</code>, <code>op(P, V)</code>: error, reduce first. This is what reminds you when an all-reduce is needed (e.g. after colwise/rowwise TP FFN, before adding back to the residual stream).</li>
 </ul>
 
 <p>The full local SPMD propagation rules table is at <a

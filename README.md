@@ -66,7 +66,7 @@ overwrites an existing `index.html`.
     python3 edit_server.py [--port 8001]
 
 serves the pages with an editor injected. Double-click a paragraph, list item,
-or heading to edit it in place; Ctrl/Cmd+Enter or clicking away saves it back to
+heading, or table cell to edit it in place; Ctrl/Cmd+Enter or clicking away saves it back to
 the `.html` file, Esc cancels, Alt+double-click edits the raw HTML. The files on
 disk stay plain HTML, and the page reloads itself when it, `tour.js`, or
 `tour.css` changes on disk.

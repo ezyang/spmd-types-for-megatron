@@ -4,7 +4,7 @@
     python3 edit_server.py [--port 8001]
 
 Serves this directory. Every *.html page gets a small editor script injected,
-and each prose block (p, li, h1-h6, summary) outside a hunk is tagged with its
+and each prose block (p, li, h1-h6, summary, td, th) outside a hunk is tagged with its
 ordinal in the source file. Double-click a block to edit it in place;
 Ctrl/Cmd+Enter or clicking away saves, Esc cancels. Alt+double-click edits the
 raw HTML instead. Enter starts a new paragraph (or list item); pasting inserts
@@ -25,7 +25,7 @@ from html.parser import HTMLParser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-BLOCKS = {"p", "li", "h1", "h2", "h3", "h4", "h5", "h6", "summary"}
+BLOCKS = {"p", "li", "h1", "h2", "h3", "h4", "h5", "h6", "summary", "td", "th"}
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
         "meta", "source", "track", "wbr"}
 

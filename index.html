@@ -549,7 +549,7 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 
 <h3>Writing custom autograd rules</h3>
 
-<p>Custom <code>autograd.Fn</code>s are typechecking blackboxes, so if they perform collectives, the standard local SPMD rules probably don't apply. For such functions, we can write SPMD type rules, i.e. how the function changes types. This Megatron patch aims for least intrusiveness, so we keep the rules in the <code>spmd_rules.py</code> side-registry, but you could also define them inline as <code>spmd_typecheck</code> methods (see <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/rules.md"><code>docs/rules.md</code></a>).</p>
+<p>Standard propagation rules typically don't apply to collective-performing autograd.Fns, so we can write SPMD type rules to treat these as blackboxes (see docs/rules.md). These constitute trusted code: the typechecker doesn’t prove them right (by default - spmd.rulecheck can test them numerically), and correctness should be judged against runtime behavior - the typechecker only ensures the composition of functions is coherent.</p>
 
 <p>Megatron defines its TP collectives in <code>tp_mappings.py</code>, custom <code>autograd.Fn</code>s like <code>_ReduceFromModelParallelRegion</code> (<code>P</code> -&gt; <code>I</code>), <code>_ReduceScatterToSequenceParallelRegion</code> (<code>P</code> -&gt; <code>S(seq)</code>), which <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#operators">the <code>spmd_types</code> docs</a> actually has a 1-1 mapping for. Registering these is pretty standard as they're just plain collectives, and the rules API actually has direct <code>rules.all_reduce</code>, <code>rules.all_gather</code> functions you can call, to signify e.g. the FWD behaves like a <code>P</code> -&gt; <code>I</code>, <code>S(i)</code> -&gt; <code>R</code>, etc.</p>
 
@@ -690,6 +690,8 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 +
 +    return decorate
 </pre>
+<p>For local compute inside a rule, like the matmul in a linear layer, <code>spmd_types.rules</code> offers <code>rules.einsum</code>, which describes the function's structure in einsum notation. An index shared by inputs and output is a dim the function commutes with chunking on, so a sharding on it passes through. An index that drops out of the output is contracted, so a sharding on it makes the output <code>P</code>. The notation also allows <code>...</code> for any number of pass-through dims, and <code>_</code> for a dim the function reads in full, which therefore can't be sharded. For example, a linear layer is <code>&quot;...k,nk-&gt;...n&quot;</code> and a bias add is <code>&quot;...n,n-&gt;...n&quot;</code>. The dim bookkeeping only applies to global SPMD typechecking: under local typechecking, which this config uses, <code>rules.einsum</code> reduces to the standard local propagation rules, and <code>P</code> inputs only pass through arguments listed in <code>linear_in</code>. See <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/rules.md">docs/rules.md</a> for the full notation.</p>
+
 <p><code>LinearWithFrozenWeight</code> is a standard matmul in FWD, and a dgrad matmul + optional all-reduce in BWD (no wgrad).</p>
 
 <ul>

@@ -69,6 +69,148 @@ TODO: link to docs when its ready
 
 TODO: switch DSv3 to global spmd types
 
+<section id="fake-process-group">
+<h2>Fake ProcessGroup setup &amp; compatibility</h2>
+<p>PyTorch's fake ProcessGroup backend lets you simulate multi-GPU, nD parallel distributed runs on a single-GPU, by replacing c10d's standard PG comms with stubs, e.g. all-reduce is a no-op, all-gather repeats the input tensor N times, reduce-scatter just takes the rank's shard without reduction (see <a href="https://github.com/pytorch/pytorch/blob/5decc7eadefc3b7c8f395e8c01b4d2caf12e7a77/torch/csrc/distributed/c10d/FakeProcessGroup.hpp#L183-L188"><code>FakeProcessGroup.hpp</code></a>). This is obviously numerically wrong, but similar, and it lets you approximate things like memory usage, compute kernel runtime, and in <code>spmd_types</code>' case check for distributed correctness, as the typechecker depends on op semantics and collective output annotations.*<br><br>*though data-dependent control flow could make the runtime path diverge!</p>
+
+<pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="_fake_distributed" data-hash="1c1edca18a" data-render="added">
+@@ -0,0 +204,23 @@ _fake_distributed
++
++
++@contextmanager
++def _fake_distributed(rank: int, world_size: int, **model_parallel_kwargs):
++    """Initialize a fake process group and, optionally, Megatron's parallel state.
++
++    The fake backend lets a single process impersonate any rank of a large
++    job. Collectives return placeholder data, which is all SPMD type checking
++    needs to follow how types flow through them.
++    """
++    torch.distributed.init_process_group(
++        backend="fake", store=FakeStore(), rank=rank, world_size=world_size
++    )
++    try:
++        if model_parallel_kwargs:
++            parallel_state.initialize_model_parallel(
++                create_gloo_process_groups=False, **model_parallel_kwargs
++            )
++        yield
++    finally:
++        if model_parallel_kwargs:
++            parallel_state.destroy_model_parallel()
++        torch.distributed.destroy_process_group()
+</pre>
+
+<p>The DSv3 setup we're running utilizes HybridEP for EP comms, which replaces your standard all-to-alls with more specialized comm kernels. Because these aren't standard PG methods, fake backend won't stub them out, but it does mean when HybridEP calls to <a href="https://github.com/deepseek-ai/DeepEP/blob/10d4dd7377d5bce900fbb4b80cce863764892b95/csrc/hybrid_ep/backend/hybrid_ep_backend.cuh#L4266-L4295"><code>device_sync_kernel</code></a> as a barrier for dispatch/combine, it'll hang waiting for the other non-EP ranks to signify readiness.<br><br>One way to avoid this is to mock fake dispatch/combine methods, where in the spirit of fake PG, we just copy over token rows from the src tensor until it's the right shape:</p>
+
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_is_fake_process_group" data-hash="849b6f7202" data-render="added">
+@@ -350,3 +352,6 @@ reset_hybrid_ep_buffer
+     _hybrid_ep_buffer = None
+ 
+ 
++def _is_fake_process_group(group: torch.distributed.ProcessGroup) -&gt; bool:
++    """Whether ``group`` uses PyTorch's fake backend, which performs no communication."""
++    return torch.distributed.get_backend(group) == "fake"
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_fake_dispatch" data-hash="6195052234" data-render="added">
+@@ -352,0 +358,22 @@ _fake_dispatch
++
++
++@spmd.no_typecheck
++def _fake_dispatch(x, routing_map, probs, num_local_experts, num_permuted_tokens):
++    """Shape-faithful stand-in for the HybridEP dispatch kernel on a fake process group.
++
++    Rows of ``x`` are recycled to fill the permuted-token budget and token counts
++    are spread evenly over the local experts. The returned handle carries what
++    ``_fake_combine`` and the backward pass need, plus the overflow flag that the
++    dispatcher reads from the real handle.
++    """
++    num_tokens = x.shape[0]
++    rows = num_permuted_tokens if num_permuted_tokens is not None else int(routing_map.sum().item())
++    indices = torch.arange(rows, device=x.device).remainder(num_tokens)
++    dispatched_hidden = x.index_select(0, indices)
++    dispatched_probs = probs.new_zeros(rows)
++    tokens_per_expert = torch.full(
++        (num_local_experts,), rows // num_local_experts, dtype=torch.long, device=x.device
++    )
++    overflow_flag = torch.zeros((), dtype=torch.int32, device=x.device)
++    handle = (indices, num_tokens, overflow_flag)
++    return dispatched_hidden, dispatched_probs, tokens_per_expert, handle
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_fake_combine" data-hash="5f9ef99e91" data-render="added">
+@@ -353,3 +380,11 @@ _fake_combine
++
++
++def _fake_combine(x, handle):
++    """Inverse of ``_fake_dispatch``: sum each token's rows back into its original slot."""
++    indices, num_tokens, _ = handle
++    return x.new_zeros(num_tokens, *x.shape[1:]).index_add_(0, indices, x)
++
++
+ class HybridEPDispatch(torch.autograd.Function):
+     '''
+     Fused dispatch operation for permute + dispatch a2a + permute using the HybridEP backend
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch.forward" data-hash="0e80263725">
+@@ -375,6 +410,17 @@ HybridEPDispatch.forward
+         '''
+         Forward pass of fused dispatch of the HybridEP backend
+         '''
++        ctx.fake = _is_fake_process_group(group)
++        if ctx.fake:
++            # The kernel needs real inter-rank transport. The stand-in carries no
++            # types of its own; the sidecar rule states the contract for both.
++            dispatched_hidden, dispatched_probs, tokens_per_expert, handle = _fake_dispatch(
++                x, routing_map, probs, num_local_experts, num_permuted_tokens
++            )
++            ctx.handle = handle
++            ctx.probs_shape = probs.shape
++            return dispatched_hidden, dispatched_probs, None, tokens_per_expert, handle
++
+         if fused or num_blocks_permute is not None or num_blocks_unpermute is not None:
+             import inspect
+             import warnings
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch.backward" data-hash="3c97fe92c3">
+@@ -446,6 +492,10 @@ HybridEPDispatch.backward
+         Backward pass of fused dispatch of the HybridEP backend
+         '''
+         handle = ctx.handle
++        if ctx.fake:
++            combined_hidden = _fake_combine(grad_x, handle)
++            combined_probs = grad_x.new_zeros(ctx.probs_shape)
++            return (combined_hidden, None, combined_probs) + (None,) * 10
+         combined_hidden, combined_probs = _hybrid_ep_buffer.combine_with_unpermute(
+             hidden=grad_x,
+             probs=grad_probs,
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPCombine.forward" data-hash="cd1e140791">
+@@ -481,6 +531,11 @@ HybridEPCombine.forward
+         '''
+         Forward pass of fused combine of the HybridEP backend
+         '''
++        ctx.fake = isinstance(handle, tuple) and len(handle) == 3 and isinstance(handle[1], int)
++        if ctx.fake:
++            ctx.handle = handle
++            with spmd.no_typecheck():
++                return _fake_combine(x, handle)
+         combined_hidden, _ = _hybrid_ep_buffer.combine_with_unpermute(
+             hidden=x,
+             handle=handle,
+</pre>
+<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPCombine.backward" data-hash="3db60445f6">
+@@ -499,6 +554,9 @@ HybridEPCombine.backward
+         Backward pass of fused combine of the HybridEP backend
+         '''
+         handle = ctx.handle
++        if ctx.fake:
++            indices, _, _ = handle
++            return grad_x.index_select(0, indices), None, None, None, None
+         dispatched_hidden, _, _, _, _ = _hybrid_ep_buffer.dispatch_with_permute(
+             hidden=grad_x,
+             scaling_factor=None,
+</pre>
+</section>
+
 <section id="what-type-checks-means">
 <h2>Annotating custom autograd functions</h2>
 
@@ -2528,148 +2670,6 @@ class CrossEntropyFunction(torch.autograd.Function):
 +    over_budget = dispatcher.check_over_budget()
 +    if over_budget is not None:
 +        spmd.assert_type(over_budget, {"TP": spmd.V, "DP": spmd.V, "CP": spmd.V})
-</pre>
-</section>
-
-<section id="fake-process-group">
-<h2>Fake ProcessGroup setup &amp; compatibility</h2>
-<p>PyTorch's fake ProcessGroup backend lets you simulate multi-GPU, nD parallel distributed runs on a single-GPU, by replacing c10d's standard PG comms with stubs, e.g. all-reduce is a no-op, all-gather repeats the input tensor N times, reduce-scatter just takes the rank's shard without reduction (see <a href="https://github.com/pytorch/pytorch/blob/5decc7eadefc3b7c8f395e8c01b4d2caf12e7a77/torch/csrc/distributed/c10d/FakeProcessGroup.hpp#L183-L188"><code>FakeProcessGroup.hpp</code></a>). This is obviously numerically wrong, but similar, and it lets you approximate things like memory usage, compute kernel runtime, and in <code>spmd_types</code>' case check for distributed correctness, as the typechecker depends on op semantics and collective output annotations.*<br><br>*though data-dependent control flow could make the runtime path diverge!</p>
-
-<pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="_fake_distributed" data-hash="1c1edca18a" data-render="added">
-@@ -0,0 +204,23 @@ _fake_distributed
-+
-+
-+@contextmanager
-+def _fake_distributed(rank: int, world_size: int, **model_parallel_kwargs):
-+    """Initialize a fake process group and, optionally, Megatron's parallel state.
-+
-+    The fake backend lets a single process impersonate any rank of a large
-+    job. Collectives return placeholder data, which is all SPMD type checking
-+    needs to follow how types flow through them.
-+    """
-+    torch.distributed.init_process_group(
-+        backend="fake", store=FakeStore(), rank=rank, world_size=world_size
-+    )
-+    try:
-+        if model_parallel_kwargs:
-+            parallel_state.initialize_model_parallel(
-+                create_gloo_process_groups=False, **model_parallel_kwargs
-+            )
-+        yield
-+    finally:
-+        if model_parallel_kwargs:
-+            parallel_state.destroy_model_parallel()
-+        torch.distributed.destroy_process_group()
-</pre>
-
-<p>The DSv3 setup we're running utilizes HybridEP for EP comms, which replaces your standard all-to-alls with more specialized comm kernels. Because these aren't standard PG methods, fake backend won't stub them out, but it does mean when HybridEP calls to <a href="https://github.com/deepseek-ai/DeepEP/blob/10d4dd7377d5bce900fbb4b80cce863764892b95/csrc/hybrid_ep/backend/hybrid_ep_backend.cuh#L4266-L4295"><code>device_sync_kernel</code></a> as a barrier for dispatch/combine, it'll hang waiting for the other non-EP ranks to signify readiness.<br><br>One way to avoid this is to mock fake dispatch/combine methods, where in the spirit of fake PG, we just copy over token rows from the src tensor until it's the right shape:</p>
-
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_is_fake_process_group" data-hash="849b6f7202" data-render="added">
-@@ -350,3 +352,6 @@ reset_hybrid_ep_buffer
-     _hybrid_ep_buffer = None
- 
- 
-+def _is_fake_process_group(group: torch.distributed.ProcessGroup) -&gt; bool:
-+    """Whether ``group`` uses PyTorch's fake backend, which performs no communication."""
-+    return torch.distributed.get_backend(group) == "fake"
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_fake_dispatch" data-hash="6195052234" data-render="added">
-@@ -352,0 +358,22 @@ _fake_dispatch
-+
-+
-+@spmd.no_typecheck
-+def _fake_dispatch(x, routing_map, probs, num_local_experts, num_permuted_tokens):
-+    """Shape-faithful stand-in for the HybridEP dispatch kernel on a fake process group.
-+
-+    Rows of ``x`` are recycled to fill the permuted-token budget and token counts
-+    are spread evenly over the local experts. The returned handle carries what
-+    ``_fake_combine`` and the backward pass need, plus the overflow flag that the
-+    dispatcher reads from the real handle.
-+    """
-+    num_tokens = x.shape[0]
-+    rows = num_permuted_tokens if num_permuted_tokens is not None else int(routing_map.sum().item())
-+    indices = torch.arange(rows, device=x.device).remainder(num_tokens)
-+    dispatched_hidden = x.index_select(0, indices)
-+    dispatched_probs = probs.new_zeros(rows)
-+    tokens_per_expert = torch.full(
-+        (num_local_experts,), rows // num_local_experts, dtype=torch.long, device=x.device
-+    )
-+    overflow_flag = torch.zeros((), dtype=torch.int32, device=x.device)
-+    handle = (indices, num_tokens, overflow_flag)
-+    return dispatched_hidden, dispatched_probs, tokens_per_expert, handle
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_fake_combine" data-hash="5f9ef99e91" data-render="added">
-@@ -353,3 +380,11 @@ _fake_combine
-+
-+
-+def _fake_combine(x, handle):
-+    """Inverse of ``_fake_dispatch``: sum each token's rows back into its original slot."""
-+    indices, num_tokens, _ = handle
-+    return x.new_zeros(num_tokens, *x.shape[1:]).index_add_(0, indices, x)
-+
-+
- class HybridEPDispatch(torch.autograd.Function):
-     '''
-     Fused dispatch operation for permute + dispatch a2a + permute using the HybridEP backend
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch.forward" data-hash="0e80263725">
-@@ -375,6 +410,17 @@ HybridEPDispatch.forward
-         '''
-         Forward pass of fused dispatch of the HybridEP backend
-         '''
-+        ctx.fake = _is_fake_process_group(group)
-+        if ctx.fake:
-+            # The kernel needs real inter-rank transport. The stand-in carries no
-+            # types of its own; the sidecar rule states the contract for both.
-+            dispatched_hidden, dispatched_probs, tokens_per_expert, handle = _fake_dispatch(
-+                x, routing_map, probs, num_local_experts, num_permuted_tokens
-+            )
-+            ctx.handle = handle
-+            ctx.probs_shape = probs.shape
-+            return dispatched_hidden, dispatched_probs, None, tokens_per_expert, handle
-+
-         if fused or num_blocks_permute is not None or num_blocks_unpermute is not None:
-             import inspect
-             import warnings
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPDispatch.backward" data-hash="3c97fe92c3">
-@@ -446,6 +492,10 @@ HybridEPDispatch.backward
-         Backward pass of fused dispatch of the HybridEP backend
-         '''
-         handle = ctx.handle
-+        if ctx.fake:
-+            combined_hidden = _fake_combine(grad_x, handle)
-+            combined_probs = grad_x.new_zeros(ctx.probs_shape)
-+            return (combined_hidden, None, combined_probs) + (None,) * 10
-         combined_hidden, combined_probs = _hybrid_ep_buffer.combine_with_unpermute(
-             hidden=grad_x,
-             probs=grad_probs,
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPCombine.forward" data-hash="cd1e140791">
-@@ -481,6 +531,11 @@ HybridEPCombine.forward
-         '''
-         Forward pass of fused combine of the HybridEP backend
-         '''
-+        ctx.fake = isinstance(handle, tuple) and len(handle) == 3 and isinstance(handle[1], int)
-+        if ctx.fake:
-+            ctx.handle = handle
-+            with spmd.no_typecheck():
-+                return _fake_combine(x, handle)
-         combined_hidden, _ = _hybrid_ep_buffer.combine_with_unpermute(
-             hidden=x,
-             handle=handle,
-</pre>
-<pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="HybridEPCombine.backward" data-hash="3db60445f6">
-@@ -499,6 +554,9 @@ HybridEPCombine.backward
-         Backward pass of fused combine of the HybridEP backend
-         '''
-         handle = ctx.handle
-+        if ctx.fake:
-+            indices, _, _ = handle
-+            return grad_x.index_select(0, indices), None, None, None, None
-         dispatched_hidden, _, _, _, _ = _hybrid_ep_buffer.dispatch_with_permute(
-             hidden=grad_x,
-             scaling_factor=None,
 </pre>
 </section>
 

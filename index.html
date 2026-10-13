@@ -222,15 +222,28 @@ TODO: switch DSv3 to global spmd types
 <section id="who-declares-what">
 <h2>Parameter conventions</h2>
 
-<p>Every tensor entering the typechecked region needs a type on each typechecked axis, and in this setup three places declare them. The model declares how its own params and buffers are sharded, read off Megatron's sharding metadata. The DDP/FSDP wrapper declares the DP and CP axes of the params whose gradients it reduces. The caller, here the unit test, declares the model inputs right before the forward call.</p>
+<p>At the start of your typechecked FWD+BWD step, all inputs, params, buffers, and other involved tensors need annotations on the active mesh axes, as spmd_types works by intercepting ops and propagating output types.</p>
 
 <h3>TP annotations</h3>
 
-<p>In our experience, tensor parallelism is the most bug-prone form of parallelism, and arguably where <code>spmd_types</code> can catch the most bugs (in <a href="https://github.com/NVIDIA/Megatron-LM/issues/7452">Megatron-LM#7452</a> most are TP). The type system is most involved for TP, and when your architecture gets fancy, or you're going beyond standard TP tricks (TP MLP, SP, vocab-parallel embedding + loss), it's not so obvious when a tensor is across ranks or not, when to inject a FWD or BWD all-reduce, or when sharded semantics apply.</p>
+<p>From our experience, tensor parallelism, when applied broadly to your model, is arguably the most bug-prone parallelism, and where spmd_types helps the most. Most of the bugs in Megatron-LM#7452 are on TP, as it's not always obvious which tensors are sharded, which gradients need reducing when, etc. etc.</p>
 
-<p><code>spmd_types</code> doesn't require you to typecheck all axes of your model, so you could just start with TP, but since adding DP &amp; CP is pretty lightweight, we'll go ahead with those too.</p>
+<p>Typing along TP can be pretty involved, as all SPMD types show up (also see TorchTitan's sharding declarations as reference: https://github.com/pytorch/torchtitan/blob/50474ad6037cc0324f8db987243727e2988bc5e1/torchtitan/models/common/decoder_sharding.py#L197):</p>
 
-<p>All input tensors to the typechecked region (inputs, params, buffers) need annotation on typechecked axes. For params this is usually read off sharding metadata, or painfully specified by hand. Fortunately Megatron stores <code>tensor_model_parallel</code>, <code>partition_dim</code>, <code>sequence_parallel</code> directly on params to say if &amp; how they're sharded, and if gradients need SP reduction.</p>
+<table class="mapping prose">
+<tr><th>FWD type</th><th>BWD type</th><th>Occurrence (TP)</th></tr>
+<tr><td><code>R</code></td><td><code>P</code></td><td>TP-replicated params (e.g. RMSNorm, router gate), with SP on:<br>FWD sees different tokens, BWD needs reduction</td></tr>
+<tr><td><code>I</code></td><td><code>I</code></td><td>TP-replicated params with SP off:<br>FWD &amp; BWD run same compute, no comms needed</td></tr>
+<tr><td><code>S(i)</code></td><td><code>S(i)</code></td><td>TP-sharded params</td></tr>
+<tr><td><code>P</code></td><td><code>R</code></td><td>GEMM output over sharded contracting dim (e.g. TP MLP)</td></tr>
+<tr><td><code>V</code></td><td><code>V</code></td><td>(In Local SPMD regions)<br>Varying values across ranks, e.g. intermediates in vocab-parallel embedding</td></tr>
+</table>
+
+<p></p>
+
+<p></p>
+
+<p>For parameters, luckily Megatron stores attributes like tensor_model_parallel, partition_dim, sequence_parallel directly on params that helps us determine their annotations, so we can just translate.<br><br>spmd_types also doesn't require you to typecheck all axes of your model - you could just start with TP, but adding DP &amp; CP is pretty lightweight, so we'll go ahead with those too.</p>
 
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dense_parameter" data-hash="39641952d1" data-render="added">
 @@ -0,0 +76,11 @@ _annotate_dense_parameter
@@ -295,10 +308,8 @@ TODO: switch DSv3 to global spmd types
 </pre>
 
 <h3>Buffers & params not requiring grad</h3>
-<p>
-     Buffers and non-trainable params also follow sharding metadata for TP, and <code>spmd.R</code> for DP/CP semantics.
-     Regarding <code>I/R</code> distinctions for TP, it is generally ok to initialize these tensors as <code>R</code>, as nothing needs to be responsible for reducing gradients.
-</p>
+<p>Buffers and non-trainable params also follow sharding metadata for TP, and <code>spmd.R</code> for DP/CP semantics.
+     Regarding <code>I/R</code> distinctions for TP, it is generally ok to initialize these tensors as <code>R</code>, as they don't require gradients and their reductions.</p>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="annotate_tensor" data-hash="00397e5052" data-render="added">
 @@ -0,0 +63,13 @@ annotate_tensor
 +
@@ -341,66 +352,11 @@ TODO: switch DSv3 to global spmd types
 <section id="handling-fsdp">
 <h2>Handling FSDP</h2>
 
-<p>You can typically annotate data parallel axes (DP, CP, EDP for Megatron) as <code>spmd.R</code> as standard convention; this follows from:</p>
-<ul>
-<li>every rank uses the same params (<code>R</code> FWD)</li>
-<li>but computes on different data (<code>R</code> params @ <code>V</code> inputs -&gt; <code>V</code> activations)</li>
-<li>the DDP / FSDP wrapper performs gradient all-reduces (<code>R</code> FWD &lt;-&gt; <code>P</code> BWD duality)</li>
-</ul>
-
-<p>This is irrespective of the particular form of DP (DDP, FSDP, HSDP, or fancier). A generic helper to annotate <code>R</code> on every param typically works, and if you use PyTorch's FSDP2 implementation it'll even fill in the FSDP axes for you, just ensure TP or other model-parallel axes are annotated (following <a href="https://github.com/pytorch/pytorch/pull/181519">pytorch/pytorch#181519</a>).</p>
-
-<p>For Megatron's wrapper we'll use the <code>_assert_parameters_replicated()</code> below.</p>
-
-<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.forward" data-hash="61badae4d8" data-render="added">
-@@ -357,3 +358,8 @@ DistributedDataParallel.__init__
-             self.enable_forward_pre_hook()
-         self.overlap_param_gather_with_optimizer_step = False
- 
-+    def forward(self, *inputs, **kwargs):
-+        """Calls the wrapped module's forward() method."""
-+        if spmd.is_type_checking():
-+            self._assert_parameters_replicated()
-+        return super().forward(*inputs, **kwargs)
-</pre>
-<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel._assert_parameters_replicated" data-hash="86c9e4c5bc" data-render="added">
-@@ -360,3 +366,27 @@ DistributedDataParallel
-+
-+    def _assert_parameters_replicated(self):
-+        """Promise, on the type-checking mesh, that this wrapper reduces the gradients.
-+
-+        A parameter whose gradient is summed here is replicated (R) along the
-+        axes of the reduction group: identical value on every rank, partial
-+        gradient. The model only knows how its parameters are sharded and leaves
-+        these axes to whichever wrapper performs the reduction.
-+
-+        The dense reduction group folds data and context parallelism together,
-+        while the type-checking mesh may keep them as separate axes, so the
-+        promise is made on each mesh axis the group contains. Expert parameters
-+        are typed on the expert mesh, where their reduction group is an axis.
-+        """
-+        mesh = spmd.current_mesh()
-+        dense_reduction_axis = spmd.MeshAxis.of(self.dp_cp_group)
-+        for param in self.params_with_grad:
-+            if getattr(param, "allreduce", True):
-+                for axis in mesh:
-+                    if axis &lt;= dense_reduction_axis:
-+                        spmd.assert_type(param, {axis: spmd.R})
-+            else:
-+                spmd.assert_type(param, {self.expt_dp_group: spmd.R})
-+
-     def enable_forward_pre_hook(self):
-         """
-         Enable forward pre-hooks needed for param all-gather overlap with forward compute.
-</pre>
+<p>Once your parameters and inputs (handled by tests) are annotated, you can try running typechecked FWD-BWD step. One of the first issues you'll probably run into is custom FSDP handling, as its machinery runs at each module's pre-forward, under typechecking scope.<br><br>If you're using PyTorch's stock FSDP2, from PyTorch 2.14.0 or later, this should be automatically handled for you, in a save-restore fashion - FSDP2 will read &amp; save the original param annotations, shard for storage, and at pre-forward, hide its machinery from the typechecker, unshard, and restore annotations on the compute-ready params (following pytorch/pytorch#181519).<br><br>For custom FSDP implementations, the general FSDP guidance for local SPMD types basically recommends this - apply spmd.no_typecheck() liberally to hide internal machinery, and re-annotate after unshard, as how FSDP (or any analogous sharding mechanism) distributed params at rest, is orthogonal to compute-time sharding and outside of the autograd graph.</p>
 
 <h3>Opting out with no_typecheck</h3>
 
-<p>In most cases you'll want the typechecker to be on for your entire FWD step (BWD can be excluded, as FWD-BWD tying ensures correctness). Machinery like FSDP2 uses module forward pre-hooks to efficiently schedule all-gathers, and you'll likely run into annoying typechecker &lt;-&gt; FSDP internal interactions if you're using a custom wrapper.</p>
-
-<p>The general <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#fsdp">FSDP guidance for local SPMD types</a> recommends applying <code>spmd.no_typecheck()</code> liberally, making this none of the typechecker's business, as internal state management isn't part of the autograd graph, and handling like distributed storage, comms, padding / copy ops, mixed-precision, quantization, should be flexible without having to reason about tensor types.</p>
-
-<p>Note that the annotation helper we wrote earlier is meant to apply after all of this - when FSDP's done its job, and presents the unsharded params ready for compute - then we can stamp on <code>spmd.R</code>.</p>
+<p>Here's how we opt out for Megatron's DDP wrapper (this config doesn't actually use FSDP):</p>
 
 <pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel._make_backward_post_hook.hook" data-hash="e837028bb2">
 @@ -433,12 +463,16 @@ DistributedDataParallel._make_backward_post_hook.hook
@@ -454,6 +410,61 @@ TODO: switch DSv3 to global spmd types
  
      def free_overlap_buffers(self):
          """Free overlap param-gather GPU buffers across all bucket groups."""
+</pre>
+
+<h3>FSDP's unshard annotations</h3>
+
+<p>Regarding re-annotation, you can typically annotate data parallel axes (DP, CP, EDP for Megatron) as <code>spmd.R</code> as standard convention; this follows from:</p>
+<ul>
+<li>every rank uses the same params (<code>R</code> FWD)</li>
+<li>but computes on different data (<code>R</code> params @ <code>V</code> inputs -&gt; <code>V</code> activations)</li>
+<li>the DDP / FSDP wrapper will perform all-reduces / reduce-scatters on the leaf gradients, which fits in with <code>R</code> FWD &lt;-&gt; <code>P</code> BWD duality.</li>
+</ul>
+
+<p>This is irrespective of the particular form of DP (DDP, FSDP, HSDP, or fancier). A generic helper to annotate <code>R</code> on every param typically works, and PyTorch's version will even fill in the FSDP axes for you, just ensure TP or other model-parallel axes are annotated (following <a href="https://github.com/pytorch/pytorch/pull/181519">pytorch/pytorch#181519</a>).</p>
+
+<p>For Megatron's wrapper we'll call <code>_assert_parameters_replicated()</code> in the pre-hook:</p>
+
+<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel.forward" data-hash="61badae4d8" data-render="added">
+@@ -357,3 +358,8 @@ DistributedDataParallel.__init__
+             self.enable_forward_pre_hook()
+         self.overlap_param_gather_with_optimizer_step = False
+ 
++    def forward(self, *inputs, **kwargs):
++        """Calls the wrapped module's forward() method."""
++        if spmd.is_type_checking():
++            self._assert_parameters_replicated()
++        return super().forward(*inputs, **kwargs)
+</pre>
+<pre class="hunk" data-file="megatron/core/distributed/distributed_data_parallel.py" data-symbol="DistributedDataParallel._assert_parameters_replicated" data-hash="86c9e4c5bc" data-render="added">
+@@ -360,3 +366,27 @@ DistributedDataParallel
++
++    def _assert_parameters_replicated(self):
++        """Promise, on the type-checking mesh, that this wrapper reduces the gradients.
++
++        A parameter whose gradient is summed here is replicated (R) along the
++        axes of the reduction group: identical value on every rank, partial
++        gradient. The model only knows how its parameters are sharded and leaves
++        these axes to whichever wrapper performs the reduction.
++
++        The dense reduction group folds data and context parallelism together,
++        while the type-checking mesh may keep them as separate axes, so the
++        promise is made on each mesh axis the group contains. Expert parameters
++        are typed on the expert mesh, where their reduction group is an axis.
++        """
++        mesh = spmd.current_mesh()
++        dense_reduction_axis = spmd.MeshAxis.of(self.dp_cp_group)
++        for param in self.params_with_grad:
++            if getattr(param, "allreduce", True):
++                for axis in mesh:
++                    if axis &lt;= dense_reduction_axis:
++                        spmd.assert_type(param, {axis: spmd.R})
++            else:
++                spmd.assert_type(param, {self.expt_dp_group: spmd.R})
++
+     def enable_forward_pre_hook(self):
+         """
+         Enable forward pre-hooks needed for param all-gather overlap with forward compute.
 </pre>
 </section>
 

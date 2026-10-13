@@ -71,7 +71,11 @@ TODO: switch DSv3 to global spmd types
 
 <section id="fake-process-group">
 <h2>Fake ProcessGroup setup &amp; compatibility</h2>
-<p>PyTorch's fake ProcessGroup backend lets you simulate multi-GPU, nD parallel distributed runs on a single-GPU, by replacing c10d's standard PG comms with stubs, e.g. all-reduce is a no-op, all-gather repeats the input tensor N times, reduce-scatter just takes the rank's shard without reduction (see <a href="https://github.com/pytorch/pytorch/blob/5decc7eadefc3b7c8f395e8c01b4d2caf12e7a77/torch/csrc/distributed/c10d/FakeProcessGroup.hpp#L183-L188"><code>FakeProcessGroup.hpp</code></a>). This is obviously numerically wrong, but similar, and it lets you approximate things like memory usage, compute kernel runtime, and in <code>spmd_types</code>' case check for distributed correctness, as the typechecker depends on op semantics and collective output annotations.*<br><br>*though data-dependent control flow could make the runtime path diverge!</p>
+<p>PyTorch's fake ProcessGroup backend lets you simulate aspects of N-D parallel multi-GPU training runs using just 1 GPU, by replacing your collectives with stubs and no-ops. Numerics will be garbage and collective timing will be near-zero (see FakeProcessGroup.hpp), but you'll be able to realistically check per-rank memory usage and compute kernel runtime.<br><br>&lt;code&gt;spmd_types&lt;/code&gt; only relies on operator sharding rule and input types, so by composing Fake PG + spmd_types, you can actually check correctness of the collectives you'd run at large scale. This helps ensure you're reducing TP gradients in the right places, treating activations as sharded when they are, using the right RNG seeds, without doing things like single-rank &lt;-&gt; large-scale numerics comparisons, cross-rank tensor hashing, or basing correctness off of a smaller-scale config.</p>
+
+<p>You'd set up the 1 GPU as you would in a large-scale run, sharding weights and inputs at real degrees, run the FWD-BWD step on CUDA as usual - only difference is no collective communication shows up in your trace.</p>
+
+<p></p>
 
 <pre class="hunk" data-file="tests/unit_tests/spmd/test_checker.py" data-symbol="_fake_distributed" data-hash="1c1edca18a" data-render="added">
 @@ -0,0 +204,23 @@ _fake_distributed
@@ -100,7 +104,9 @@ TODO: switch DSv3 to global spmd types
 +        torch.distributed.destroy_process_group()
 </pre>
 
-<p>The DSv3 setup we're running utilizes HybridEP for EP comms, which replaces your standard all-to-alls with more specialized comm kernels. Because these aren't standard PG methods, fake backend won't stub them out, but it does mean when HybridEP calls to <a href="https://github.com/deepseek-ai/DeepEP/blob/10d4dd7377d5bce900fbb4b80cce863764892b95/csrc/hybrid_ep/backend/hybrid_ep_backend.cuh#L4266-L4295"><code>device_sync_kernel</code></a> as a barrier for dispatch/combine, it'll hang waiting for the other non-EP ranks to signify readiness.<br><br>One way to avoid this is to mock fake dispatch/combine methods, where in the spirit of fake PG, we just copy over token rows from the src tensor until it's the right shape:</p>
+<p>Megatron already added fake PG support to profile memory and compute kernels, but the DSv3 setup we're running uses HybridEP as the EP dispatcher, which replaces your standard a2as with more specialized kernels. Because these aren't standard PG methods, fake backend won't stub them out, which will silently hang when an EP rank hits a dispatch/combine barrier, waiting for the other EP ranks to signify readiness.</p>
+
+<p>One way to avoid this is to mock fake dispatch/combine methods, where similar to other fake PG stubs, we just copy over token rows from the src tensor until it's the right shape:</p>
 
 <pre class="hunk" data-file="megatron/core/transformer/moe/fused_a2a.py" data-symbol="_is_fake_process_group" data-hash="849b6f7202" data-render="added">
 @@ -350,3 +352,6 @@ reset_hybrid_ep_buffer

@@ -435,10 +435,13 @@
     });
 
     // A hunk belongs to the nearest h3/h4 before it in its section, else the
-    // section itself.
+    // section itself. Hunks nested in a wrapper (e.g. a side-by-side .pair) look
+    // past the wrapper for that heading.
     function headingOf(pre) {
-      for (var n = pre.previousElementSibling; n; n = n.previousElementSibling) {
-        if ((n.tagName === 'H3' || n.tagName === 'H4') && n.id) return n;
+      for (var node = pre; node && node.tagName !== 'SECTION'; node = node.parentElement) {
+        for (var n = node.previousElementSibling; n; n = n.previousElementSibling) {
+          if ((n.tagName === 'H3' || n.tagName === 'H4') && n.id) return n;
+        }
       }
       return pre.closest('section[id]');
     }

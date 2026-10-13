@@ -550,8 +550,7 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 </section>
 
 <section id="local-spmd-typecheck-rules">
-<h2>Writing custom type rules</h2>
-<h3>Collective-performing autograd functions</h3>
+<h2>Writing custom autograd rules</h2>
 
 <p>Custom <code>autograd.Fn</code>s are typechecking blackboxes, so if they perform collectives, the standard local SPMD rules probably don't apply. For such functions, we can write SPMD type rules, i.e. how the function changes types. This Megatron patch aims for least intrusiveness, so we keep the rules in the <code>spmd_rules.py</code> side-registry, but you could also define them inline as <code>spmd_typecheck</code> methods (see <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/rules.md"><code>docs/rules.md</code></a>).</p>
 

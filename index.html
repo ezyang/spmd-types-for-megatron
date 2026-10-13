@@ -547,10 +547,7 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 
 <p>Custom autograd functions are blackboxes to <code>spmd_types</code>’ typechecker; it can’t see the compute / collectives inside, and isn’t sure about the right propagation rules. Every <code>autograd.Fn</code> called in a FWD-BWD pass needs type annotations. These constitute trusted code: the typechecker doesn’t prove them right (by default - <code>spmd.rulecheck</code> can test them numerically), and correctness must be judged against the <code>autograd.Fn</code>’s runtime behavior. The typechecker only ensures the composition of functions is coherent for the FWD-BWD pass.</p>
 
-</section>
-
-<section id="local-spmd-typecheck-rules">
-<h2>Writing custom autograd rules</h2>
+<h3>Writing custom autograd rules</h3>
 
 <p>Custom <code>autograd.Fn</code>s are typechecking blackboxes, so if they perform collectives, the standard local SPMD rules probably don't apply. For such functions, we can write SPMD type rules, i.e. how the function changes types. This Megatron patch aims for least intrusiveness, so we keep the rules in the <code>spmd_rules.py</code> side-registry, but you could also define them inline as <code>spmd_typecheck</code> methods (see <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/rules.md"><code>docs/rules.md</code></a>).</p>
 

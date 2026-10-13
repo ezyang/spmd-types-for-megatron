@@ -44,7 +44,9 @@ the global tensor from the local shards.  This is <strong>global SPMD</strong> t
 </li>
 </ol>
 
-<p>We recently rewrote <a href="https://github.com/pytorch/torchtitan/">torchtitan</a>
+<p>We recently had Astra go through the Megatron codebase to look for silent distributed + numerical-correctness bugs, and it found 13, mostly around TP (Megatron-LM#7452), and most would've been catchable by spmd_types. Granted, this is not a huge number (we've seen comparable counts in our own codebases), we caught them in the midst of an MPU migration, and not all of them are in core production paths. Our thesis just is: it's easy to have these bugs in an active, ongoing codebase.</p>
+
+<p>We also recently rewrote <a href="https://github.com/pytorch/torchtitan/">torchtitan</a>
 to make use of <code>spmd_types</code> instead of DTensor, with the goal of making
 it more obvious when collectives occur in torchtitan model code.  However, <code>spmd_types</code>
 is designed to be easy to retrofit in a variety of different codebases.  In this
@@ -219,6 +221,8 @@ TODO: switch DSv3 to global spmd types
 
 <section id="who-declares-what">
 <h2>Parameter conventions</h2>
+
+<p>Every tensor entering the typechecked region needs a type on each typechecked axis, and in this setup three places declare them. The model declares how its own params and buffers are sharded, read off Megatron's sharding metadata. The DDP/FSDP wrapper declares the DP and CP axes of the params whose gradients it reduces. The caller, here the unit test, declares the model inputs right before the forward call.</p>
 
 <h3>TP annotations</h3>
 

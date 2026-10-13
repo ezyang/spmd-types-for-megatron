@@ -471,11 +471,21 @@ TODO: switch DSv3 to global spmd types
 <section id="what-type-checks-means">
 <h2>Annotating custom autograd functions</h2>
 
-<p>Custom autograd functions are blackboxes to <code>spmd_types</code>’ typechecker; it can’t see the compute / collectives inside, and isn’t sure about the right propagation rules. Every <code>autograd.Fn</code> called in a FWD-BWD pass needs type annotations. These constitute trusted code: the typechecker doesn’t prove them right (by default - <code>spmd.rulecheck</code> can test them numerically), and correctness must be judged against the <code>autograd.Fn</code>’s runtime behavior. The typechecker only ensures the composition of functions is coherent for the FWD-BWD pass.</p>
+<p>Assuming spmd_types doesn't find any distributed bugs, the next blocker you'll probably run into with Megatron is custom autograd Functions. spmd_types chooses not to propagate through these by default, because it's unclear if they'll perform collectives in FWD or BWD.</p>
 
 <h3>Local autograd functions</h3>
 
-<p>If you’re only doing local SPMD typechecking, it’s very simple to support custom autograd functions that don’t have collectives (e.g. SwiGLU, MLA, RoPE, router-gate, aux-loss) - just annotate the <code>autograd.Fn</code> as local, and the typechecker knows to apply standard local SPMD propagation rules.</p>
+<p>If you're only doing local SPMD typecheck, and you hit custom autograd.Fns that don't have collectives (e.g. they exist just to invoke custom BWD kernels - SwiGLU, MLA, RoPE, etc.), it's very easy to support - just annotate the autograd.Fn as local, and the typechecker knows to look inside them and apply standard local SPMD propagation rules.</p>
+
+<p>These are op-invariant, standard rules like:</p>
+<ul>
+<li>Compute on <code>I</code> (<code>Invariant</code>: the FWD value and BWD gradient are identical across ranks) gives <code>I</code>, compute on <code>R</code> (<code>Replicate</code>: identical FWD values, but gradients pend reduction) gives <code>R</code>. Pretty standard, ranks computing on same inputs produce the same outputs.</li>
+<li><code>R</code> combined with <code>V</code> (<code>Varying</code>: both FWD &amp; BWD values can vary, e.g. sharded / different data / different local BS) gives <code>V</code>. Makes sense - 1 input differs across ranks, the output differs too. <code>I</code> doesn't mix with <code>V</code> (or any other type); <code>R</code> is allowed because the [<code>R</code> FWD &lt;-&gt; <code>P</code> BWD] duality is a reminder that the gradient pends reduction, aggregating contributions from varying compute. The common case is data parallelism (same params, different data) - the gradient all-reduce computes a singular value for the global batch.</li>
+<li><code>P</code> (<code>Partial</code>: FWD pending reduction, identical incoming gradients) propagation depends on the class of op. This is useful for things like delaying or coalescing all-reduces, but also reminds you when an all-reduce is needed (e.g. after colwise/rowwise TP FFN, before adding back to residual stream).</li>
+</ul>
+
+<p>The full local SPMD propagation rules table is at <a
+href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#propagation-rules">spmd_types documentation</a>.</p>
 
 <p>We maintain a local function registry in the rules module:</p>
 
@@ -530,15 +540,7 @@ TODO: switch DSv3 to global spmd types
 +    spmd.register_local_autograd_function(function)
 </pre>
 
-<p>The local SPMD rules say things like:</p>
-<ul>
-<li>Compute on <code>I</code> (<code>Invariant</code>: the FWD value and BWD gradient are identical across ranks) gives <code>I</code>, compute on <code>R</code> (<code>Replicate</code>: identical FWD values, but gradients pend reduction) gives <code>R</code>. Pretty standard, ranks computing on same inputs produce the same outputs.</li>
-<li><code>R</code> combined with <code>V</code> (<code>Varying</code>: both FWD &amp; BWD values can vary, e.g. sharded / different data / different local BS) gives <code>V</code>. Makes sense - 1 input differs across ranks, the output differs too. <code>I</code> doesn't mix with <code>V</code> (or any other type); <code>R</code> is allowed because the [<code>R</code> FWD &lt;-&gt; <code>P</code> BWD] duality is a reminder that the gradient pends reduction, aggregating contributions from varying compute. The common case is data parallelism (same params, different data) - the gradient all-reduce computes a singular value for the global batch.</li>
-<li><code>P</code> (<code>Partial</code>: FWD pending reduction, identical incoming gradients) propagation depends on the class of op. This is useful for things like delaying or coalescing all-reduces, but also reminds you when an all-reduce is needed (e.g. after colwise/rowwise TP FFN, before adding back to residual stream).</li>
-</ul>
-
-<p>The full local SPMD propagation rules table is at <a
-href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#propagation-rules">spmd_types documentation</a>.</p>
+<p>Custom autograd functions are blackboxes to <code>spmd_types</code>’ typechecker; it can’t see the compute / collectives inside, and isn’t sure about the right propagation rules. Every <code>autograd.Fn</code> called in a FWD-BWD pass needs type annotations. These constitute trusted code: the typechecker doesn’t prove them right (by default - <code>spmd.rulecheck</code> can test them numerically), and correctness must be judged against the <code>autograd.Fn</code>’s runtime behavior. The typechecker only ensures the composition of functions is coherent for the FWD-BWD pass.</p>
 
 </section>
 

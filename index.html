@@ -1787,7 +1787,7 @@ loss-parallel cross entropy, and backward. A complementary test for rank 0, cove
 
 <p>That's it! With this setup, you're able to typecheck a 256-GPU DSv3 for compute-time distributed correctness, using just 1 GPU + fake PG.</p>
 
-<p>Admittedly, it is quite a good amount of machinery, but from experience this scales rather well with # of configs tested - do the general setup once, register rules for all your custom <code>autograd.Fn</code>s, and have a parametrizable fake PG + typecheck test setup that sweeps through all the N-D parallel versions of your configs.</p>
+<p>Admittedly, it is quite a good amount of machinery, but from experience this scales rather well with # of configs tested - do the general setup once, register rules for all your custom <code>autograd.Fn</code>s, and have a parametrizable fake PG + typecheck test setup that sweeps through all the N-D parallel versions of your configs. You also don't have to typecheck all mesh axes: if some of them are more error-prone than others (e.g. TP/CP), typechecking just those reduces the work needed to support SPMD typechecking while keeping most of the payoff.</p>
 
 <p>Another note is that the TorchTitan + <code>spmd_types</code> integration is primarily global SPMD, dropping into local regions (<a href="https://github.com/meta-pytorch/spmd_types/blob/a1b86deadc037988083bfacd747e01f77a3fa2a0/spmd_types/runtime.py#L1219-L1298"><code>spmd.local_map</code></a>) when needed. This is more involved (e.g. <code>S(i)</code> instead of <code>V</code>, local SPMD when per-rank compute != single-rank compute), but gives you benefits like inferring sharding annotations of intermediate tensors, or more accurate inference of <code>P</code> outputs.</p>
 

@@ -341,73 +341,12 @@
     });
   }
 
-  // <div class="pair">: rule hunk on the left, source on the right, the
-  // rule sized to fit.  The pair
-  // is widened past the text column toward the window edge, and the source
-  // scrolls inside the height of the left box, or of the reference rule box
-  // (_linear_with_frozen_weight) when the left one is shorter.
-  var PAIR_REF = 'megatron/core/spmd/spmd_rules.py::_linear_with_frozen_weight';
-  var PAIR_MAX = 1400;
-  var PAIR_LEFT = 0.6;
-
-  function layoutPairs() {
-    // Pairs inside closed <details> have no layout to measure. Open them for the
-    // measurement and close them again in the same task, so nothing repaints and
-    // the sizes are already right when a reader expands one.
-    var closed = Array.prototype.filter.call(document.querySelectorAll('details:not([open])'),
-      function (d) { return d.querySelector('.pair'); });
-    closed.forEach(function (d) { d.open = true; });
-    try { layoutPairsOpen(); } finally { closed.forEach(function (d) { d.open = false; }); }
-  }
-
-  function layoutPairsOpen() {
-    var pairs = document.querySelectorAll('.pair');
-    // Center each pair on the text column, clamped to the space right of the
-    // TOC sidebar (when shown) and the window edge.
-    var toc = document.querySelector('nav.toc');
-    var tocRect = toc && toc.getBoundingClientRect();
-    var lo = (tocRect && tocRect.width ? tocRect.right : 0) + 16;
-    var hi = document.documentElement.clientWidth - 16;
-    Array.prototype.forEach.call(pairs, function (pair) {
-      pair.style.width = pair.style.marginLeft = '';
-      var r = pair.getBoundingClientRect();
-      var w = Math.max(r.width, Math.min(hi - lo, PAIR_MAX));
-      var x = Math.min(Math.max(r.left + r.width / 2 - w / 2, lo), hi - w);
-      pair.style.width = w + 'px';
-      pair.style.marginLeft = Math.min(0, x - r.left) + 'px';
-    });
-    // One left width for every pair: the widest rule, so it need not scroll,
-    // up to PAIR_LEFT of the pair.  The source takes the rest and scrolls.
-    var lefts = [];
-    Array.prototype.forEach.call(pairs, function (pair) {
-      var box = pair.querySelector(':scope > .tour:not(.source)');
-      if (!box) return;
-      pair.style.gridTemplateColumns = '';
-      box.style.width = 'max-content';
-      lefts.push(box.offsetWidth + 2);
-      box.style.width = '';
-    });
-    var leftW = Math.max.apply(null, lefts.concat(0));
-    Array.prototype.forEach.call(pairs, function (pair) {
-      var w = Math.min(leftW, pair.offsetWidth * PAIR_LEFT);
-      pair.style.gridTemplateColumns = w + 'px minmax(0, 1fr)';
-    });
-    var ref = document.getElementById(PAIR_REF);
-    var refBox = ref && ref.closest('.tour');
-    Array.prototype.forEach.call(pairs, function (pair) {
-      var boxes = pair.querySelectorAll(':scope > .tour');
-      var src = pair.querySelector(':scope > .tour.source');
-      if (boxes.length < 2 || !src) return;
-      var target = Math.max(boxes[0].offsetHeight, refBox ? refBox.offsetHeight : 0);
-      var scroll = src.querySelector('.tour-scroll');
-      scroll.style.maxHeight = (target - (src.offsetHeight - scroll.offsetHeight) - 2) + 'px';
-    });
-  }
+  // <div class="pair">: the rule hunk with the source it describes stacked
+  // below it at the same width; the source scrolls inside a capped height
+  // (tour.css), so the pair needs no script layout.
 
   function renderSources() {
     Array.prototype.forEach.call(document.querySelectorAll('pre.source'), renderSource);
-    layoutPairs();
-    window.addEventListener('resize', layoutPairs);
   }
 
   function slug(s) {
@@ -445,7 +384,7 @@
     });
 
     // A hunk belongs to the nearest h3/h4 before it in its section, else the
-    // section itself. Hunks nested in a wrapper (e.g. a side-by-side .pair) look
+    // section itself. Hunks nested in a wrapper (e.g. a .pair) look
     // past the wrapper for that heading.
     function headingOf(pre) {
       for (var node = pre; node && node.tagName !== 'SECTION'; node = node.parentElement) {
@@ -570,7 +509,6 @@
     scrollBoxes();
     crosslink();
     toc();
-    layoutPairs();
     appendix();
   });
 })();

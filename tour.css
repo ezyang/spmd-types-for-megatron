@@ -74,8 +74,9 @@ table.mapping th { background: #f6f8fa; font-family: Helvetica, Arial, sans-seri
 table.mapping.prose, table.mapping.prose th { font: inherit; }
 table.mapping.prose th { font-weight: bold; }
 pre.source { display: none; }
-.pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; margin: 1.2em 0; align-items: start; }
-.pair > .tour { margin: 0; }
+.pair { margin: 1.2em 0; }
+.pair > .tour { margin: 0 0 8px 0; }
+.pair > .tour.source .tour-scroll { max-height: 24em; }
 .tour.source { overflow-x: visible; }
 .tour-scroll { overflow: auto; }
 .tour.source .tour-head { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

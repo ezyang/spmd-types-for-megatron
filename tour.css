@@ -73,6 +73,7 @@ table.mapping th, table.mapping td { border: 1px solid #ddd; padding: 3px 8px; t
 table.mapping th { background: #f6f8fa; font-family: Helvetica, Arial, sans-serif; }
 table.mapping.prose, table.mapping.prose th { font: inherit; }
 table.mapping.prose th { font-weight: bold; }
+table.mapping.collectives td:not(:first-child) { white-space: nowrap; }
 pre.source { display: none; }
 .pair { margin: 1.2em 0; }
 .pair > .tour { margin: 0 0 8px 0; }

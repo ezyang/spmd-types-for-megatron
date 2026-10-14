@@ -553,7 +553,7 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 
 <p>Megatron defines its TP collectives in <code>tp_mappings.py</code>, custom <code>autograd.Fn</code>s like <code>_ReduceFromModelParallelRegion</code> (<code>P</code> -&gt; <code>I</code>), <code>_ReduceScatterToSequenceParallelRegion</code> (<code>P</code> -&gt; <code>S(seq)</code>), which <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types.md#operators">the <code>spmd_types</code> docs</a> actually has a 1-1 mapping for. Registering these is pretty standard as they're just plain collectives, and the rules API actually has direct <code>rules.all_reduce</code>, <code>rules.all_gather</code> functions you can call, to signify e.g. the FWD behaves like a <code>P</code> -&gt; <code>I</code>, <code>S(i)</code> -&gt; <code>R</code>, etc.</p>
 
-<table class="mapping">
+<table class="mapping prose collectives">
 <tr><th>Megatron function</th><th>src</th><th>dst</th><th>FWD</th><th>BWD</th></tr>
 <tr><td><code>copy_to_tensor_model_parallel_region(x)</code></td><td><code>I</code></td><td><code>R</code></td><td>no-op</td><td>all-reduce</td></tr>
 <tr><td><code>reduce_from_tensor_model_parallel_region(x)</code></td><td><code>P</code></td><td><code>I</code></td><td>all-reduce</td><td>no-op</td></tr>

@@ -692,6 +692,8 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 </pre>
 <p>For writing custom propagation rules, spmd_types offers rules.einsum to describe the function in an einsum-style notation that isn't restricted to dot products: named dims require matching sharding, or can be contracted away, ... refers to passthrough dims, _ dims disallow sharding, and linear_in signifies P propagation. See <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/rules.md">docs/rules.md</a> for the full notation.</p>
 
+<p>Rules can also call a type-only version of each <code>spmd_types</code> collective, e.g. <code>rules.all_gather</code>, <code>rules.all_reduce</code>, <code>rules.reduce_scatter</code>, <code>rules.all_to_all</code>, <code>rules.convert</code>, <code>rules.reinterpret</code>, which take the same <code>src</code> / <code>dst</code> types as the real op but don't communicate. In hooks that receive the real outputs, <code>rules.output(out, typed)</code> stamps them with the computed types, and <code>rules.ignore(x)</code> marks an input that has no sharding constraints.</p>
+
 <h3>Autograd rule registry</h3>
 
 <p><code>LinearWithFrozenWeight</code> is a standard matmul in FWD, and a dgrad matmul + optional all-reduce in BWD (no wgrad).</p>

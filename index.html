@@ -692,9 +692,12 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 </pre>
 <p>For writing custom propagation rules, spmd_types offers rules.einsum to describe the function in an einsum-style notation that isn't restricted to dot products: named dims require matching sharding, or can be contracted away, ... refers to passthrough dims, _ dims disallow sharding, and linear_in signifies P propagation. See <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/rules.md">docs/rules.md</a> for the full notation.</p>
 
-<p>Rules can also call a type-only version of each <code>spmd_types</code> collective, e.g. <code>rules.all_gather</code>, <code>rules.all_reduce</code>, <code>rules.reduce_scatter</code>, <code>rules.all_to_all</code>, <code>rules.convert</code>, <code>rules.reinterpret</code>, which take the same <code>src</code> / <code>dst</code> types as the real op but don't communicate. In hooks that receive the real outputs, <code>rules.output(out, typed)</code> stamps them with the computed types, and <code>rules.ignore(x)</code> marks an input that has no sharding constraints.</p>
+<p>Custom rules can also internally call <code>rules.all_gather</code>, <code>rules.all_reduce</code>, <code>rules.reduce_scatter</code>, etc., to produce the same types those collectives would. <code>rules.output(out, typed)</code> copies the types of another tensor, and <code>rules.ignore(x)</code> says an input doesn't affect the output sharding.</p>
 
 <h3>Autograd rule registry</h3>
+
+<details class="rule">
+<summary><code>LinearWithFrozenWeight</code></summary>
 
 <p><code>LinearWithFrozenWeight</code> is a standard matmul in FWD, and a dgrad matmul + optional all-reduce in BWD (no wgrad).</p>
 
@@ -755,8 +758,12 @@ class LinearWithFrozenWeight(torch.autograd.Function):
         return grad_input, None, None, None, None
 </pre>
 </div>
+</details>
 
-<p><code>LinearWithGradAccumulationAndAsyncCommunication</code> is somehow the same with an active wgrad op, and supports an input all-gather for sequence parallelism.</p>
+<details class="rule">
+<summary><code>LinearWithGradAccumulationAndAsyncCommunication</code></summary>
+
+<p><code>LinearWithGradAccumulationAndAsyncCommunication</code> is the same with an active wgrad op, and supports an input all-gather for sequence parallelism.</p>
 
 <div class="pair">
 <pre class="hunk" data-file="megatron/core/spmd/spmd_rules.py" data-symbol="_linear_with_grad_accumulation" data-hash="3a3d04aace" data-render="added">
@@ -981,6 +988,10 @@ class LinearWithGradAccumulationAndAsyncCommunication(torch.autograd.Function):
         return grad_input, grad_weight, grad_bias, None, None, None, None, None, None
 </pre>
 </div>
+</details>
+
+<details class="rule">
+<summary><code>MoEAuxLossAutoScaler</code> / <code>MTPLossAutoScaler</code></summary>
 
 <p>MoE (router load-balancing) and MTP (token prediction) auxiliary losses use these autograd.Fns to inject the losses into the main autograd graph and scale its gradient contribution; they are identities in FWD and local ops in BWD (just scaling, no semantics change).<br><br>We'd register this as a local autograd.Fn, but the (V output, I aux_loss) inputs don't mix in local SPMD rules, so we use <code>rules.output()</code> to say the output takes the activation's type, and the aux loss is ignored.</p>
 
@@ -1040,6 +1051,10 @@ class MoEAuxLossAutoScaler(torch.autograd.Function):
         return grad_output, scaled_aux_loss_grad
 </pre>
 </div>
+</details>
+
+<details class="rule">
+<summary><code>HybridEPDispatch</code></summary>
 
 <p>EP dispatch sends a varying count of tokens to each EP rank based on router outputs. This isn't well-represented by <code>S(0)</code> (sharding is jagged, and not a sharded view of the "global" compute), so the EP region is best annotated as <code>spmd.V</code>.</p>
 
@@ -1202,6 +1217,10 @@ class HybridEPDispatch(torch.autograd.Function):
         )
 </pre>
 </div>
+</details>
+
+<details class="rule">
+<summary><code>HybridEPCombine</code></summary>
 
 <p>EP combine all-to-all sends expert token outputs back to their owning ranks. The collective keeps the output V on the sparse mesh, so we carry over the type.</p>
 
@@ -1265,6 +1284,10 @@ class HybridEPCombine(torch.autograd.Function):
         return dispatched_hidden, None, None, None, None
 </pre>
 </div>
+</details>
+
+<details class="rule">
+<summary>Transformer Engine <code>_Linear</code></summary>
 
 <p>Transformer Engine's Linear autograd.Fns merge collectives into the TP linears (e.g. AG -&gt; colwise -&gt; rowwise -&gt; RS). This makes the generic helper account for the input collective (colwise: if sequence-parallel, if BWD all-reduce is required), the matmul itself, and the output collective (rowwise: reduce-scatter vs. all-reduce on partial output).</p>
 
@@ -1412,6 +1435,10 @@ class _Linear(torch.autograd.Function):
         return result
 </pre>
 </div>
+</details>
+
+<details class="rule">
+<summary>Transformer Engine <code>_LayerNormLinear</code></summary>
 
 <p>TE's <code>_LayerNormLinear</code> fuses a LayerNorm in front of the same linear, so we prepend <code>rules.einsum("..._,_-&gt;..._", inp, ln_weight)</code> as LayerNorm requires the full hidden dimension.</p>
 
@@ -2438,6 +2465,10 @@ class _LayerNormLinear(torch.autograd.Function):
         )
 </pre>
 </div>
+</details>
+
+<details class="rule">
+<summary>Transformer Engine <code>CrossEntropyFunction</code></summary>
 
 <p>Vocab-parallel cross-entropy takes logits sharded on the vocab dim (<code>S(-1)</code>) with invariant labels (I), and computes the output loss (I) in a distributed fashion.</p>
 
@@ -2536,6 +2567,7 @@ class CrossEntropyFunction(torch.autograd.Function):
         )
 </pre>
 </div>
+</details>
 
 </section>
 

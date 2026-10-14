@@ -1,4 +1,4 @@
 [submodule "Megatron-LM"]
 	path = Megatron-LM
-	url = https://github.com/pianpwk/Megatron-LM.git
+	url = https://github.com/ezyang/Megatron-LM.git
 	branch = spmd-rules-einsum

@@ -690,7 +690,9 @@ href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/local_spmd_types
 +
 +    return decorate
 </pre>
-<p>For local compute inside a rule, like the matmul in a linear layer, <code>spmd_types.rules</code> offers <code>rules.einsum</code>, which describes the function's structure in einsum notation. An index shared by inputs and output is a dim the function commutes with chunking on, so a sharding on it passes through. An index that drops out of the output is contracted, so a sharding on it makes the output <code>P</code>. The notation also allows <code>...</code> for any number of pass-through dims, and <code>_</code> for a dim the function reads in full, which therefore can't be sharded. For example, a linear layer is <code>&quot;...k,nk-&gt;...n&quot;</code> and a bias add is <code>&quot;...n,n-&gt;...n&quot;</code>. The dim bookkeeping only applies to global SPMD typechecking: under local typechecking, which this config uses, <code>rules.einsum</code> reduces to the standard local propagation rules, and <code>P</code> inputs only pass through arguments listed in <code>linear_in</code>. See <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/rules.md">docs/rules.md</a> for the full notation.</p>
+<p>For writing custom propagation rules, spmd_types offers rules.einsum to describe the function in an einsum-style notation that isn't restricted to dot products: named dims require matching sharding, or can be contracted away, ... refers to passthrough dims, _ dims disallow sharding, and linear_in signifies P propagation. See <a href="https://github.com/meta-pytorch/spmd_types/blob/main/docs/rules.md">docs/rules.md</a> for the full notation.</p>
+
+<h3>Autograd rule registry</h3>
 
 <p><code>LinearWithFrozenWeight</code> is a standard matmul in FWD, and a dgrad matmul + optional all-reduce in BWD (no wgrad).</p>
 

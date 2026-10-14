@@ -1287,7 +1287,7 @@ class HybridEPCombine(torch.autograd.Function):
 </details>
 
 <details class="rule">
-<summary>Transformer Engine <code>_Linear</code></summary>
+<summary>TransformerEngine <code>_Linear</code></summary>
 
 <p>Transformer Engine's Linear autograd.Fns merge collectives into the TP linears (e.g. AG -&gt; colwise -&gt; rowwise -&gt; RS). This makes the generic helper account for the input collective (colwise: if sequence-parallel, if BWD all-reduce is required), the matmul itself, and the output collective (rowwise: reduce-scatter vs. all-reduce on partial output).</p>
 
@@ -1438,7 +1438,7 @@ class _Linear(torch.autograd.Function):
 </details>
 
 <details class="rule">
-<summary>Transformer Engine <code>_LayerNormLinear</code></summary>
+<summary>TransformerEngine <code>_LayerNormLinear</code></summary>
 
 <p>TE's <code>_LayerNormLinear</code> fuses a LayerNorm in front of the same linear, so we prepend <code>rules.einsum("..._,_-&gt;..._", inp, ln_weight)</code> as LayerNorm requires the full hidden dimension.</p>
 
@@ -2468,7 +2468,7 @@ class _LayerNormLinear(torch.autograd.Function):
 </details>
 
 <details class="rule">
-<summary>Transformer Engine <code>CrossEntropyFunction</code></summary>
+<summary>TransformerEngine <code>CrossEntropyFunction</code></summary>
 
 <p>Vocab-parallel cross-entropy takes logits sharded on the vocab dim (<code>S(-1)</code>) with invariant labels (I), and computes the output loss (I) in a distributed fashion.</p>
 

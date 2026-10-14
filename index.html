@@ -2573,7 +2573,9 @@ class CrossEntropyFunction(torch.autograd.Function):
 
 <section id="two-meshes">
 <h2>Expert parallelism</h2>
-<p>For EP, Megatron uses what it calls <a href="https://arxiv.org/html/2504.14960v3">"MoE parallel folding"</a>, which just means EP ranks are a subset of the (TP x CP x DP) GPU ranks, and not an orthogonal mesh axis (FWIW, <a href="https://github.com/pytorch/torchtitan/blob/d6810e4d6d66bd605daee63f797fc488306a0e94/torchtitan/distributed/parallelism_context.py#L259-L276">torchtitan also does this</a>).<br><br>It's then simpler to view EP vs. DP/CP/TP as on different device meshes, and not all on the same mesh, with the (TP x CP x DP) default dense mesh used for attention and other non-MoE-FFN compute, and the (ETP x EP x EDP) sparse or expert mesh for the MoE region.</p>
+<p>Megatron's expert parallelism (EP) uses what it calls <a href="https://arxiv.org/html/2504.14960v3">"MoE parallel folding"</a>, which just means EP ranks are a subset of the TP x CP x DP ranks, instead of an orthogonal mesh axis (FWIW, <a href="https://github.com/pytorch/torchtitan/blob/d6810e4d6d66bd605daee63f797fc488306a0e94/torchtitan/distributed/parallelism_context.py#L259-L276">torchtitan also does this</a>).</p>
+
+<p>It's then simpler to view ETP x EP x EDP and TP x CP x DP as different device meshes, namely the sparse/expert mesh used for the MoE EP region, and the default dense mesh used for all other compute.</p>
 
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="expert_parallel_mesh" data-hash="98a1cb529f" data-render="added">
 @@ -0,0 +102,16 @@ expert_parallel_mesh
@@ -2595,11 +2597,11 @@ class CrossEntropyFunction(torch.autograd.Function):
 +    }
 </pre>
 
-<p><code>spmd_types</code> allows you to flexibly transition across meshes by re-annotating your tensors, or changing the active ambient mesh - the typechecker will check compatibility between your pre- &amp; post-transition types (say, if an axis is shared across both meshes, but sharded on one but not the other, you must redistribute or fix the annotation).</p>
+<p>Cross-mesh transitions are rather flexible in spmd_types, unlike paradigms like DTensor. Under typechecking, the mesh is just the annotation keys, and you can transition by re-annotating - the typechecker will check compatibility between your pre- &amp; post-transition types (say, if an axis is shared across both meshes, but sharded on one but not the other, you must redistribute or fix the annotation). it's also common to set an ambient mesh context in spmd_types to check against.<br><br>With typechecking off, the mesh only provides the PGs needed for communication - tensors in compute aren't coupled to them.</p>
 
 
 
-<p>MoE compute goes router -&gt; dispatch -&gt; FFN -&gt; combine, and sparse-dense mesh transition happens at the dispatch/combine all-to-alls; only expert FFN compute is on the sparse mesh. For Megatron we add <code>expert_parallel_region</code> to set the ambient sparse mesh, and <code>leave_expert_parallel_region</code> to transition back to dense; both have negligible-to-no runtime overhead.</p>
+<p>Back to expert parallelism: MoE compute goes router -&gt; dispatch -&gt; FFN -&gt; combine, and sparse-dense mesh transition happens at the dispatch/combine all-to-alls; only expert FFN compute is on the sparse mesh. For Megatron we set <code>expert_parallel_region</code> as the ambient sparse mesh context, and call <code>leave_expert_parallel_region</code> to transition back to dense; both have negligible-to-no runtime overhead.</p>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="expert_parallel_region" data-hash="b73784590f" data-render="added">
 @@ -0,0 +146,11 @@ expert_parallel_region
 +
@@ -2720,7 +2722,7 @@ class CrossEntropyFunction(torch.autograd.Function):
 +    )
 </pre>
 
-<p>For typechecking to pass we annotate the bit tensor HybridEP uses to track <a href="https://github.com/NVIDIA/Megatron-LM/blob/main/docs/user-guide/features/paged_stash.md">paged activation stashing overflow</a>.</p>
+<p>For typechecking to pass, we also annotate the bit tensor HybridEP uses to track <a href="https://github.com/NVIDIA/Megatron-LM/blob/main/docs/user-guide/features/paged_stash.md">paged activation stashing overflow</a>.</p>
 <pre class="hunk" data-file="megatron/core/spmd/annotations.py" data-symbol="_annotate_dispatcher_state" data-hash="fcba4332b3" data-render="added">
 @@ -0,0 +182,11 @@ _annotate_dispatcher_state
 +

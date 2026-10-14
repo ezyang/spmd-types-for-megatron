@@ -86,3 +86,8 @@ math mi { text-transform: none; font-style: italic; }
 math[display="block"] { margin: 0.6em 0; font-size: 1.1em; }
 math .term { border-bottom: 1px solid #999; padding: 0 2px 3px; }
 math .term-label { font-size: 0.75em; color: #555; padding-top: 2px; }
+details.rule { margin: 0.3em 0; }
+details.rule > summary { cursor: pointer; padding: 4px 0; }
+details.rule > summary:hover { color: #0550ae; }
+details.rule[open] > summary { margin-bottom: 0.4em; }
+details.rule[open] { margin-bottom: 1.2em; }

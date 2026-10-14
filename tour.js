@@ -351,6 +351,16 @@
   var PAIR_LEFT = 0.6;
 
   function layoutPairs() {
+    // Pairs inside closed <details> have no layout to measure. Open them for the
+    // measurement and close them again in the same task, so nothing repaints and
+    // the sizes are already right when a reader expands one.
+    var closed = Array.prototype.filter.call(document.querySelectorAll('details:not([open])'),
+      function (d) { return d.querySelector('.pair'); });
+    closed.forEach(function (d) { d.open = true; });
+    try { layoutPairsOpen(); } finally { closed.forEach(function (d) { d.open = false; }); }
+  }
+
+  function layoutPairsOpen() {
     var pairs = document.querySelectorAll('.pair');
     // Center each pair on the text column, clamped to the space right of the
     // TOC sidebar (when shown) and the window edge.
@@ -493,7 +503,8 @@
   }
 
   // <details class="appendix">: collapsed by default; its <summary> carries a
-  // diffstat of the hunks inside, and any link into it opens it first.
+  // diffstat of the hunks inside. A link into any collapsed <details> (appendix
+  // or a <details class="rule"> block) opens it first.
   function appendix() {
     Array.prototype.forEach.call(document.querySelectorAll('details.appendix'), function (det) {
       var summary = det.querySelector('summary') || det.insertBefore(el('summary'), det.firstChild);
@@ -542,8 +553,12 @@
       try { id = decodeURIComponent(location.hash.slice(1)); } catch (e) { id = location.hash.slice(1); }
       var target = document.getElementById(id);
       if (!target) return;
-      var det = target.closest('details.appendix');
-      if (det && !det.open) { det.open = true; target.scrollIntoView(); }
+      // Open every collapsed <details> around the target, innermost last.
+      var opened = false;
+      for (var det = target.closest('details'); det; det = det.parentElement && det.parentElement.closest('details')) {
+        if (!det.open) { det.open = true; opened = true; }
+      }
+      if (opened) target.scrollIntoView();
     }
     window.addEventListener('hashchange', reveal);
     reveal();

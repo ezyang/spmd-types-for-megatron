@@ -74,7 +74,7 @@ disk stay plain HTML, and the page reloads itself when it, `tour.js`, or
 The same server adds review comments: select text and click **Comment** (or
 Ctrl/Cmd+Alt+M) to open a thread in the panel on the right, where others can
 reply and resolve it. Threads are anchored to the quoted text, saved in
-`PAGE.comments.json` next to the page (gitignored), and shared by everyone using
+`PAGE.comments.json` next to the page (committed with the branch), and shared by everyone using
 the server; the panel picks up new comments every few seconds. For reviewers,
 `python3 edit_server.py --bind 0.0.0.0 --no-edit` serves comments without inline
 editing. The deployed site has neither, since both come from this server.

@@ -1,0 +1,26 @@
+{
+ "version": 2,
+ "threads": [
+  {
+   "id": "1d07dacf",
+   "quote": "s.  spmd_types keeps tr",
+   "prefix": "ll result in silently incorrect gradient",
+   "suffix": "ack of\nwhether or not backward gradients",
+   "resolved": false,
+   "comments": [
+    {
+     "id": "8fc4e2d0",
+     "name": "",
+     "body": "testing",
+     "time": 1791960963174
+    },
+    {
+     "id": "3bbfb2d4",
+     "name": "",
+     "body": "(just for review)",
+     "time": 1791960999371
+    }
+   ]
+  }
+ ]
+}

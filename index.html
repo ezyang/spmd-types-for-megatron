@@ -16,9 +16,7 @@
 <body>
 <h1>Using spmd_types in Megatron</h1>
 
-<p>We recently had Astra go through the Megatron codebase to look for silent distributed + numerical-correctness bugs, and it found 13, mostly around TP (<a href="https://github.com/NVIDIA/Megatron-LM/issues/7452">Megatron-LM#7452</a>), and most would've been catchable by <a href="https://github.com/meta-pytorch/spmd_types"><code>spmd_types</code></a>. Granted, this is not a huge number (we've seen comparable counts in our own codebases), we caught them in the midst of an MPU migration, and not all of them are in core production paths. Our thesis just is: it's easy to have these bugs in an active, ongoing codebase.</p>
-
-<p><code>spmd_types</code> is a type system for distributed tensor computations.
+<p><a href="https://github.com/meta-pytorch/spmd_types"><code>spmd_types</code></a> is a type system for distributed tensor computations.
 It helps solve two specific problems that commonly arise when writing distributed code:
 </p>
 
@@ -45,6 +43,8 @@ benefit, <code>spmd_types</code> SPMD type tells you how to reassemble
 the global tensor from the local shards.  This is <strong>global SPMD</strong> typechecking.
 </li>
 </ol>
+
+<p>We recently had Astra go through the Megatron codebase to look for silent distributed + numerical-correctness bugs, and it surfaced 13, most of which were around TP (<a href="https://github.com/NVIDIA/Megatron-LM/issues/7452">Megatron-LM#7452</a>), and most would've been catchable by <code>spmd_types</code>. Granted, this is not a huge number (we've seen comparable counts in our own codebases), we caught them in the midst of an MPU migration, and not all of them are in core production paths. Our thesis just is: it's easy to have these bugs in an active, ongoing codebase.</p>
 
 <p>We also recently rewrote <a href="https://github.com/pytorch/torchtitan/">TorchTitan</a>
 to make use of <code>spmd_types</code> instead of DTensor, with the goal of making

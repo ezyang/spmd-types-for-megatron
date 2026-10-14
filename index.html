@@ -2919,12 +2919,14 @@ loss-parallel cross entropy, and backward.</li>
 +        )
 </pre>
 
-<p>That's it! With this setup, you're able to typecheck a 256-GPU DSv3 for compute-time distributed correctness, using just 1 GPU + fake PG.</p>
+<p></p>
 
 </section>
 
 <section id="closing-thoughts">
 <h2>Closing thoughts</h2>
+
+<p>That's it! With this setup, you're able to typecheck a 256-GPU DSv3 for compute-time distributed correctness, using just 1 GPU + fake PG.</p>
 
 <p>Admittedly, it is quite a good amount of machinery, but from experience this scales rather well with # of configs tested - do the general setup once, register rules for all your custom <code>autograd.Fn</code>s, and have a parametrizable fake PG + typecheck test setup that sweeps through all the N-D parallel versions of your configs.</p>
 
